@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voxel Ray Traversal Engine v2.0</title>
+    <style>
+        /* ============================================
+           Reset & Base
+           ============================================ */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #1a1a2e;
+            color: #eee;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            overflow: hidden;
+        }
+        
+        /* ============================================
+           Layout
+           ============================================ */
+        #container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        #canvas-container {
+            flex: 1;
+            position: relative;
+            cursor: crosshair;
+        }
+        
+        #canvas-container.locked {
+            cursor: none;
+        }
+        
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        
+        /* ============================================
+           Sidebar UI
+           ============================================ */
+        #ui {
+            width: 280px;
+            background: #16213e;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        
+        h1 {
+            font-size: 1.2em;
+            margin-bottom: 5px;
+            color: #e94560;
+        }
+        
+        .version {
+            font-size: 0.75em;
+            color: #4ecca3;
+            margin-bottom: 15px;
+        }
+        
+        h2 {
+            font-size: 0.95em;
+            margin: 15px 0 10px;
+            color: #0f3460;
+            background: #e94560;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        
+        /* Stats display */
+        .stat {
+            display: flex;
+            justify-content: space-between;
+            margin: 8px 0;
+            font-size: 0.85em;
+        }
+        
+        .stat-label {
+            color: #888;
+        }
+        
+        .stat-value {
+            color: #4ecca3;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        
+        .stat-value.highlight {
+            color: #ffd700;
+        }
+        
+        /* Controls */
+        .control-group {
+            margin: 10px 0;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 0.85em;
+            color: #888;
+        }
+        
+        input[type="range"] {
+            width: 100%;
+            margin: 5px 0;
+            accent-color: #e94560;
+        }
+        
+        input[type="checkbox"] {
+            accent-color: #e94560;
+            margin-right: 8px;
+        }
+        
+        select {
+            width: 100%;
+            padding: 8px;
+            background: #0f3460;
+            border: none;
+            color: #eee;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        select:focus {
+            outline: 2px solid #e94560;
+        }
+        
+        /* Info box */
+        .info {
+            background: #0f3460;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            line-height: 1.5;
+            margin-top: 15px;
+        }
+        
+        .key {
+            display: inline-block;
+            background: #e94560;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            margin: 1px;
+            font-size: 0.9em;
+        }
+        
+        /* Badge */
+        .badge {
+            display: inline-block;
+            background: #4ecca3;
+            color: #0f3460;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7em;
+            font-weight: bold;
+            margin-left: 5px;
+            vertical-align: middle;
+        }
+        
+        /* ============================================
+           Overlay & Crosshair
+           ============================================ */
+        #overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            pointer-events: none;
+            opacity: 1;
+            transition: opacity 0.3s ease;
+        }
+        
+        #overlay.hidden {
+            opacity: 0;
+        }
+        
+        #overlay h2 {
+            background: none;
+            color: #fff;
+            font-size: 1.5em;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        }
+        
+        #overlay p {
+            color: #aaa;
+            margin-top: 10px;
+        }
+        
+        .crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+        }
+        
+        .crosshair.visible {
+            opacity: 0.7;
+        }
+        
+        .crosshair::before,
+        .crosshair::after {
+            content: '';
+            position: absolute;
+            background: #fff;
+        }
+        
+        .crosshair::before {
+            width: 2px;
+            height: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        
+        .crosshair::after {
+            width: 100%;
+            height: 2px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        
+        /* ============================================
+           Responsive
+           ============================================ */
+        @media (max-width: 768px) {
+            #ui {
+                width: 240px;
+                padding: 15px;
+            }
+            
+            h1 {
+                font-size: 1.1em;
+            }
+            
+            .stat {
+                font-size: 0.8em;
+            }
+        }
+        
+        @media (max-width: 600px) {
+            #container {
+                flex-direction: column-reverse;
+            }
+            
+            #ui {
+                width: 100%;
+                height: auto;
+                max-height: 40vh;
+            }
+            
+            #canvas-container {
+                height: 60vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <!-- Canvas Area -->
+        <div id="canvas-container">
+            <canvas id="canvas"></canvas>
+            
+            <!-- Start Overlay -->
+            <div id="overlay">
+                <h2>Click to Start</h2>
+                <p>Use WASD to move, mouse to look</p>
+            </div>
+            
+            <!-- Crosshair -->
+            <div class="crosshair"></div>
+        </div>
+        
+        <!-- Sidebar UI -->
+        <div id="ui">
+            <h1>🎮 Voxel Ray Traversal</h1>
+            <div class="version">v2.0 - WebGL2 GPU Accelerated <span class="badge">NEW</span></div>
+            
+            <!-- Statistics Section -->
+            <h2>📊 Statistics</h2>
+            <div class="stat">
+                <span class="stat-label">FPS</span>
+                <span class="stat-value highlight" id="fps">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Frame Time</span>
+                <span class="stat-value" id="frame-time">0 ms</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Resolution</span>
+                <span class="stat-value" id="resolution-display">0 x 0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Voxels</span>
+                <span class="stat-value" id="voxel-count">0</span>
+            </div>
+            
+            <!-- Camera Section -->
+            <h2>📷 Camera</h2>
+            <div class="stat">
+                <span class="stat-label">Position</span>
+                <span class="stat-value" id="cam-pos">(0, 0, 0)</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Direction</span>
+                <span class="stat-value" id="cam-dir">(0, 0, 0)</span>
+            </div>
+            
+            <!-- Settings Section -->
+            <h2>⚙️ Settings</h2>
+            
+            <div class="control-group">
+                <label>Resolution Scale</label>
+                <input type="range" id="resolution" min="0.25" max="2" step="0.25" value="1">
+                <span class="stat-value" id="resolution-val">1x</span>
+            </div>
+            
+            <div class="control-group">
+                <label>World Size</label>
+                <select id="world-size">
+                    <option value="32">32³ (32K voxels)</option>
+                    <option value="64" selected>64³ (262K voxels)</option>
+                    <option value="128">128³ (2M voxels)</option>
+                    <option value="256">256³ (16M voxels)</option>
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label>Max Steps</label>
+                <input type="range" id="max-steps" min="64" max="512" step="64" value="256">
+                <span class="stat-value" id="max-steps-val">256</span>
+            </div>
+            
+            <div class="control-group">
+                <label>FOV</label>
+                <input type="range" id="fov" min="30" max="120" step="5" value="70">
+                <span class="stat-value" id="fov-val">70°</span>
+            </div>
+            
+            <div class="control-group">
+                <label>Scene</label>
+                <select id="scene">
+                    <option value="demo">Demo Scene</option>
+                    <option value="sphere">Sphere</option>
+                    <option value="terrain">Terrain</option>
+                    <option value="city">City</option>
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="show-normals">
+                    Show Normals
+                </label>
+            </div>
+            
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="enable-shadows" checked>
+                    Enable Shadows
+                </label>
+            </div>
+            
+            <!-- Controls Info -->
+            <div class="info">
+                <strong>Controls:</strong><br>
+                <span class="key">W</span>
+                <span class="key">A</span>
+                <span class="key">S</span>
+                <span class="key">D</span> - Move<br>
+                <span class="key">Q</span>
+                <span class="key">E</span> - Up/Down<br>
+                <span class="key">Mouse</span> - Look<br>
+                <span class="key">Scroll</span> - Zoom<br>
+                <span class="key">ESC</span> - Release cursor
+            </div>
+        </div>
+    </div>
+    
+    <!-- Engine Scripts -->
+    <script src="engine.js"></script>
+    <script src="showcase.js"></script>
+    
+    <!-- Initialize Application -->
+    <script>
+        // Start the showcase app when page loads
+        const app = new ShowcaseApp('canvas');
+        app.run();
+    </script>
+</body>
+</html>
