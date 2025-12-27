@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voxel Ray Traversal - JavaScript</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; overflow: hidden; }
+        #container { display: flex; height: 100vh; }
+        #canvas-container { flex: 1; position: relative; cursor: crosshair; }
+        #canvas-container.locked { cursor: none; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #ui { width: 280px; background: #16213e; padding: 20px; overflow-y: auto; }
+        h1 { font-size: 1.2em; margin-bottom: 15px; color: #e94560; }
+        h2 { font-size: 0.95em; margin: 15px 0 10px; color: #0f3460; background: #e94560; padding: 5px 10px; border-radius: 4px; }
+        .stat { display: flex; justify-content: space-between; margin: 8px 0; font-size: 0.85em; }
+        .stat-label { color: #888; }
+        .stat-value { color: #4ecca3; font-family: monospace; }
+        .control-group { margin: 10px 0; }
+        label { display: block; margin-bottom: 5px; font-size: 0.85em; color: #888; }
+        input[type="range"] { width: 100%; margin: 5px 0; }
+        select { width: 100%; padding: 8px; background: #0f3460; border: none; color: #eee; border-radius: 4px; }
+        .info { background: #0f3460; padding: 10px; border-radius: 4px; font-size: 0.8em; line-height: 1.5; margin-top: 15px; }
+        .key { background: #e94560; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+        #overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none; opacity: 1; transition: opacity 0.3s; }
+        #overlay.hidden { opacity: 0; }
+        #overlay h2 { background: none; color: #fff; font-size: 1.5em; }
+        #overlay p { color: #aaa; margin-top: 10px; }
+        .crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 20px; height: 20px; opacity: 0; transition: opacity 0.3s; }
+        .crosshair.visible { opacity: 0.7; }
+        .crosshair::before, .crosshair::after { content: ''; position: absolute; background: #fff; }
+        .crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+        .crosshair::after { width: 100%; height: 2px; top: 50%; transform: translateY(-50%); }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="canvas-container">
+            <canvas id="canvas"></canvas>
+            <div id="overlay"><h2>Click to Start</h2><p>Use WASD to move, mouse to look</p></div>
+            <div class="crosshair"></div>
+        </div>
+        <div id="ui">
+            <h1>🎮 Voxel Ray Traversal</h1>
+            <h2>📊 Statistics</h2>
+            <div class="stat"><span class="stat-label">FPS</span><span class="stat-value" id="fps">0</span></div>
+            <div class="stat"><span class="stat-label">Frame Time</span><span class="stat-value" id="frame-time">0 ms</span></div>
+            <div class="stat"><span class="stat-label">Rays/Frame</span><span class="stat-value" id="rays">0</span></div>
+            <div class="stat"><span class="stat-label">Avg Steps/Ray</span><span class="stat-value" id="avg-steps">0</span></div>
+            <h2>📷 Camera</h2>
+            <div class="stat"><span class="stat-label">Position</span><span class="stat-value" id="cam-pos">(0, 0, 0)</span></div>
+            <div class="stat"><span class="stat-label">Direction</span><span class="stat-value" id="cam-dir">(0, 0, 0)</span></div>
+            <h2>⚙️ Settings</h2>
+            <div class="control-group"><label>Resolution Scale</label><input type="range" id="resolution" min="0.25" max="1" step="0.25" value="0.5"><span class="stat-value" id="resolution-val">0.5x</span></div>
+            <div class="control-group"><label>Max Steps</label><input type="range" id="max-steps" min="32" max="256" step="32" value="128"><span class="stat-value" id="max-steps-val">128</span></div>
+            <div class="control-group"><label>FOV</label><input type="range" id="fov" min="30" max="120" step="5" value="70"><span class="stat-value" id="fov-val">70°</span></div>
+            <div class="control-group"><label>Scene</label><select id="scene"><option value="demo">Demo Scene</option><option value="sphere">Sphere</option><option value="terrain">Terrain</option><option value="city">City</option></select></div>
+            <div class="control-group"><label><input type="checkbox" id="show-normals"> Show Normals</label></div>
+            <div class="control-group"><label><input type="checkbox" id="show-steps"> Show Step Count</label></div>
+            <div class="info"><strong>Controls:</strong><br><span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> - Move<br><span class="key">Q</span><span class="key">E</span> - Up/Down<br><span class="key">Mouse</span> - Look<br><span class="key">Scroll</span> - Zoom<br><span class="key">ESC</span> - Release cursor</div>
+        </div>
+    </div>
+<script>
+// Vector Math
+class Vec3 {
+    constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+    clone() { return new Vec3(this.x, this.y, this.z); }
+    add(v) { return new Vec3(this.x + v.x, this.y + v.y, this.z + v.z); }
+    sub(v) { return new Vec3(this.x - v.x, this.y - v.y, this.z - v.z); }
+    mul(s) { return new Vec3(this.x * s, this.y * s, this.z * s); }
+    div(s) { return new Vec3(this.x / s, this.y / s, this.z / s); }
+    dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z; }
+    cross(v) { return new Vec3(this.y * v.z - this.z * v.y, this.z * v.x - this.x * v.z, this.x * v.y - this.y * v.x); }
+    length() { return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z); }
+    normalize() { const len = this.length(); return len === 0 ? new Vec3() : this.div(len); }
+    toString() { return `(${this.x.toFixed(1)}, ${this.y.toFixed(1)}, ${this.z.toFixed(1)})`; }
+}
+
+// Voxel World
+class VoxelWorld {
+    constructor(sizeX, sizeY, sizeZ) {
+        this.sizeX = sizeX; this.sizeY = sizeY; this.sizeZ = sizeZ;
+        this.voxels = new Uint8Array(sizeX * sizeY * sizeZ);
+        this.colors = new Uint32Array(sizeX * sizeY * sizeZ);
+    }
+    getIndex(x, y, z) {
+        if (x < 0 || x >= this.sizeX || y < 0 || y >= this.sizeY || z < 0 || z >= this.sizeZ) return -1;
+        return x + y * this.sizeX + z * this.sizeX * this.sizeY;
+    }
+    get(x, y, z) { const idx = this.getIndex(x, y, z); return idx >= 0 ? this.voxels[idx] : 0; }
+    set(x, y, z, value, color = 0xFFFFFF) {
+        const idx = this.getIndex(x, y, z);
+        if (idx >= 0) { this.voxels[idx] = value; this.colors[idx] = color; }
+    }
+    getColor(x, y, z) { const idx = this.getIndex(x, y, z); return idx >= 0 ? this.colors[idx] : 0; }
+    clear() { this.voxels.fill(0); this.colors.fill(0); }
+    isInBounds(x, y, z) { return x >= 0 && x < this.sizeX && y >= 0 && y < this.sizeY && z >= 0 && z < this.sizeZ; }
+}
+
+// Scene Generators
+function generateDemoScene(world) {
+    world.clear();
+    for (let x = 0; x < world.sizeX; x++) {
+        for (let z = 0; z < world.sizeZ; z++) {
+            world.set(x, 0, z, 1, ((x + z) % 2 === 0) ? 0x3a5a40 : 0x588157);
+        }
+    }
+    const structures = [{x:10,z:10,h:15,color:0xe63946},{x:20,z:15,h:20,color:0x457b9d},{x:15,z:25,h:12,color:0xf4a261},{x:25,z:8,h:18,color:0x2a9d8f},{x:8,z:22,h:10,color:0xe9c46a}];
+    for (const s of structures) {
+        for (let y = 1; y <= s.h; y++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    world.set(s.x + dx, y, s.z + dz, 1, s.color);
+                }
+            }
+        }
+    }
+    for (let i = 0; i < 200; i++) {
+        const x = Math.floor(Math.random() * world.sizeX);
+        const y = Math.floor(Math.random() * 5) + 1;
+        const z = Math.floor(Math.random() * world.sizeZ);
+        world.set(x, y, z, 1, [0x9b2226, 0xae2012, 0xbb3e03, 0xca6702, 0xee9b00][Math.floor(Math.random() * 5)]);
+    }
+}
+
+function generateSphereScene(world) {
+    world.clear();
+    const cx = world.sizeX / 2, cy = world.sizeY / 2, cz = world.sizeZ / 2;
+    const radius = Math.min(cx, cy, cz) - 2;
+    for (let x = 0; x < world.sizeX; x++) {
+        for (let y = 0; y < world.sizeY; y++) {
+            for (let z = 0; z < world.sizeZ; z++) {
+                const dist = Math.sqrt((x-cx)**2 + (y-cy)**2 + (z-cz)**2);
+                if (dist <= radius && dist >= radius - 2) {
+                    const r = Math.floor(((x / world.sizeX) * 127) + 128);
+                    const g = Math.floor(((y / world.sizeY) * 127) + 128);
+                    const b = Math.floor(((z / world.sizeZ) * 127) + 128);
+                    world.set(x, y, z, 1, (r << 16) | (g << 8) | b);
+                }
+            }
+        }
+    }
+}
+
+function generateTerrainScene(world) {
+    world.clear();
+    const scale = 0.1;
+    for (let x = 0; x < world.sizeX; x++) {
+        for (let z = 0; z < world.sizeZ; z++) {
+            const noise1 = Math.sin(x * scale) * Math.cos(z * scale);
+            const noise2 = Math.sin(x * scale * 2 + 1) * Math.cos(z * scale * 2 + 1) * 0.5;
+            const height = Math.floor(((noise1 + noise2) * 0.5 + 0.5) * 15) + 1;
+            for (let y = 0; y < height; y++) {
+                let color = y === height - 1 ? 0x4a7c59 : (y > height - 4 ? 0x8b5e3c : 0x6b6b6b);
+                world.set(x, y, z, 1, color);
+            }
+        }
+    }
+}
+
+function generateCityScene(world) {
+    world.clear();
+    for (let x = 0; x < world.sizeX; x++) for (let z = 0; z < world.sizeZ; z++) world.set(x, 0, z, 1, 0x424242);
+    const gridSize = 6;
+    for (let gx = 1; gx < world.sizeX / gridSize - 1; gx++) {
+        for (let gz = 1; gz < world.sizeZ / gridSize - 1; gz++) {
+            if (Math.random() > 0.3) {
+                const bx = gx * gridSize + 1, bz = gz * gridSize + 1;
+                const height = Math.floor(Math.random() * 20) + 5;
+                const width = Math.floor(Math.random() * 2) + 2;
+                const color = [0x78909c, 0x90a4ae, 0xb0bec5, 0x607d8b, 0x455a64][Math.floor(Math.random() * 5)];
+                for (let y = 1; y <= height; y++) {
+                    for (let dx = 0; dx < width; dx++) {
+                        for (let dz = 0; dz < width; dz++) {
+                            const isWindow = (y % 3 === 0) && ((dx + dz) % 2 === 0);
+                            world.set(bx + dx, y, bz + dz, 1, isWindow ? 0xfff59d : color);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Ray Traversal (Amanatides & Woo DDA)
+class RayTraversal {
+    constructor(world, maxSteps = 128) { this.world = world; this.maxSteps = maxSteps; }
+
+    traverse(origin, direction) {
+        const result = {hit: false, position: null, voxel: null, normal: new Vec3(), color: 0, steps: 0, distance: 0};
+        direction = direction.normalize();
+        const worldMin = new Vec3(0, 0, 0);
+        const worldMax = new Vec3(this.world.sizeX, this.world.sizeY, this.world.sizeZ);
+        const rayAABB = this.rayBoxIntersection(origin, direction, worldMin, worldMax);
+        if (!rayAABB.hit) return result;
+
+        let tStart = Math.max(0, rayAABB.tMin + 0.001);
+        const startPos = origin.add(direction.mul(tStart));
+        let coord = new Vec3(Math.floor(startPos.x), Math.floor(startPos.y), Math.floor(startPos.z));
+        coord.x = Math.max(0, Math.min(this.world.sizeX - 1, coord.x));
+        coord.y = Math.max(0, Math.min(this.world.sizeY - 1, coord.y));
+        coord.z = Math.max(0, Math.min(this.world.sizeZ - 1, coord.z));
+
+        const step = new Vec3(direction.x >= 0 ? 1 : -1, direction.y >= 0 ? 1 : -1, direction.z >= 0 ? 1 : -1);
+        const delta = new Vec3(
+            direction.x !== 0 ? Math.abs(1 / direction.x) : Infinity,
+            direction.y !== 0 ? Math.abs(1 / direction.y) : Infinity,
+            direction.z !== 0 ? Math.abs(1 / direction.z) : Infinity
+        );
+        const t = new Vec3(
+            direction.x !== 0 ? ((step.x > 0 ? (coord.x + 1 - startPos.x) : (startPos.x - coord.x)) * delta.x) : Infinity,
+            direction.y !== 0 ? ((step.y > 0 ? (coord.y + 1 - startPos.y) : (startPos.y - coord.y)) * delta.y) : Infinity,
+            direction.z !== 0 ? ((step.z > 0 ? (coord.z + 1 - startPos.z) : (startPos.z - coord.z)) * delta.z) : Infinity
+        );
+
+        let lastAxis = -1;
+
+        for (let i = 0; i < this.maxSteps; i++) {
+            result.steps = i + 1;
+            if (this.world.isInBounds(coord.x, coord.y, coord.z)) {
+                const voxel = this.world.get(coord.x, coord.y, coord.z);
+                if (voxel !== 0) {
+                    result.hit = true;
+                    result.voxel = coord.clone();
+                    result.color = this.world.getColor(coord.x, coord.y, coord.z);
+                    const currentT = tStart + Math.min(t.x, t.y, t.z) - Math.min(delta.x, delta.y, delta.z);
+                    result.distance = currentT;
+                    result.position = origin.add(direction.mul(currentT));
+                    if (lastAxis === 0) result.normal = new Vec3(-step.x, 0, 0);
+                    else if (lastAxis === 1) result.normal = new Vec3(0, -step.y, 0);
+                    else if (lastAxis === 2) result.normal = new Vec3(0, 0, -step.z);
+                    return result;
+                }
+            }
+
+            // Classic branching DDA step
+            if (t.x < t.y) {
+                if (t.x < t.z) { coord.x += step.x; t.x += delta.x; lastAxis = 0; }
+                else { coord.z += step.z; t.z += delta.z; lastAxis = 2; }
+            } else {
+                if (t.y < t.z) { coord.y += step.y; t.y += delta.y; lastAxis = 1; }
+                else { coord.z += step.z; t.z += delta.z; lastAxis = 2; }
+            }
+
+            if (coord.x < 0 || coord.x >= this.world.sizeX || coord.y < 0 || coord.y >= this.world.sizeY || coord.z < 0 || coord.z >= this.world.sizeZ) break;
+        }
+        return result;
+    }
+
+    rayBoxIntersection(origin, direction, boxMin, boxMax) {
+        const invDir = new Vec3(direction.x !== 0 ? 1/direction.x : Infinity, direction.y !== 0 ? 1/direction.y : Infinity, direction.z !== 0 ? 1/direction.z : Infinity);
+        const t1 = (boxMin.x - origin.x) * invDir.x, t2 = (boxMax.x - origin.x) * invDir.x;
+        const t3 = (boxMin.y - origin.y) * invDir.y, t4 = (boxMax.y - origin.y) * invDir.y;
+        const t5 = (boxMin.z - origin.z) * invDir.z, t6 = (boxMax.z - origin.z) * invDir.z;
+        const tMin = Math.max(Math.min(t1, t2), Math.min(t3, t4), Math.min(t5, t6));
+        const tMax = Math.min(Math.max(t1, t2), Math.max(t3, t4), Math.max(t5, t6));
+        return {hit: tMax >= Math.max(0, tMin), tMin, tMax};
+    }
+}
+
+// Camera
+class Camera {
+    constructor() {
+        this.position = new Vec3(16, 25, -10);
+        this.yaw = 0; this.pitch = -0.3; this.fov = 70;
+        this.moveSpeed = 15; this.lookSpeed = 0.002;
+    }
+    getDirection() { return new Vec3(Math.cos(this.pitch) * Math.sin(this.yaw), Math.sin(this.pitch), Math.cos(this.pitch) * Math.cos(this.yaw)).normalize(); }
+    getRight() { return new Vec3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize(); }
+    getUp() { return this.getDirection().cross(this.getRight()).normalize(); }
+    getRayDirection(x, y, width, height) {
+        const aspectRatio = width / height;
+        const fovRad = (this.fov * Math.PI) / 180;
+        const halfHeight = Math.tan(fovRad / 2);
+        const halfWidth = aspectRatio * halfHeight;
+        const ndcX = (2 * x / width - 1) * halfWidth;
+        const ndcY = (1 - 2 * y / height) * halfHeight;
+        const forward = this.getDirection(), right = this.getRight(), up = this.getUp();
+        return forward.add(right.mul(ndcX)).add(up.mul(ndcY)).normalize();
+    }
+}
+
+// Renderer
+class VoxelRenderer {
+    constructor(canvas) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.resolutionScale = 0.5;
+        this.showNormals = false;
+        this.showSteps = false;
+        this.camera = new Camera();
+        this.world = new VoxelWorld(32, 32, 32);
+        this.traversal = new RayTraversal(this.world);
+        this.lastFrameTime = 0; this.frameCount = 0; this.fps = 0;
+        this.totalSteps = 0; this.totalRays = 0;
+        this.keys = {}; this.isLocked = false;
+        this.resize();
+        this.setupInputs();
+        generateDemoScene(this.world);
+    }
+
+    resize() {
+        const container = this.canvas.parentElement;
+        this.canvas.width = container.clientWidth;
+        this.canvas.height = container.clientHeight;
+        this.renderWidth = Math.floor(this.canvas.width * this.resolutionScale);
+        this.renderHeight = Math.floor(this.canvas.height * this.resolutionScale);
+        this.imageData = this.ctx.createImageData(this.renderWidth, this.renderHeight);
+    }
+
+    setupInputs() {
+        window.addEventListener('keydown', (e) => { this.keys[e.code] = true; if (e.code === 'Escape' && this.isLocked) document.exitPointerLock(); });
+        window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+        this.canvas.addEventListener('click', () => { if (!this.isLocked) this.canvas.requestPointerLock(); });
+        document.addEventListener('pointerlockchange', () => {
+            this.isLocked = document.pointerLockElement === this.canvas;
+            document.getElementById('overlay').classList.toggle('hidden', this.isLocked);
+            document.querySelector('.crosshair').classList.toggle('visible', this.isLocked);
+            this.canvas.parentElement.classList.toggle('locked', this.isLocked);
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (this.isLocked) {
+                this.camera.yaw += e.movementX * this.camera.lookSpeed;
+                this.camera.pitch -= e.movementY * this.camera.lookSpeed;
+                this.camera.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.camera.pitch));
+            }
+        });
+        this.canvas.addEventListener('wheel', (e) => {
+            this.camera.fov = Math.max(30, Math.min(120, this.camera.fov + e.deltaY * 0.05));
+            document.getElementById('fov').value = this.camera.fov;
+            document.getElementById('fov-val').textContent = Math.round(this.camera.fov) + '°';
+        });
+        window.addEventListener('resize', () => this.resize());
+        document.getElementById('resolution').addEventListener('input', (e) => { this.resolutionScale = parseFloat(e.target.value); document.getElementById('resolution-val').textContent = this.resolutionScale + 'x'; this.resize(); });
+        document.getElementById('max-steps').addEventListener('input', (e) => { this.traversal.maxSteps = parseInt(e.target.value); document.getElementById('max-steps-val').textContent = e.target.value; });
+        document.getElementById('fov').addEventListener('input', (e) => { this.camera.fov = parseInt(e.target.value); document.getElementById('fov-val').textContent = e.target.value + '°'; });
+        document.getElementById('scene').addEventListener('change', (e) => {
+            switch (e.target.value) {
+                case 'demo': generateDemoScene(this.world); break;
+                case 'sphere': generateSphereScene(this.world); break;
+                case 'terrain': generateTerrainScene(this.world); break;
+                case 'city': generateCityScene(this.world); break;
+            }
+        });
+        document.getElementById('show-normals').addEventListener('change', (e) => { this.showNormals = e.target.checked; });
+        document.getElementById('show-steps').addEventListener('change', (e) => { this.showSteps = e.target.checked; });
+    }
+
+    update(deltaTime) {
+        const speed = this.camera.moveSpeed * deltaTime;
+        const forward = this.camera.getDirection(), right = this.camera.getRight();
+        if (this.keys['KeyW']) this.camera.position = this.camera.position.add(forward.mul(speed));
+        if (this.keys['KeyS']) this.camera.position = this.camera.position.sub(forward.mul(speed));
+        if (this.keys['KeyA']) this.camera.position = this.camera.position.sub(right.mul(speed));
+        if (this.keys['KeyD']) this.camera.position = this.camera.position.add(right.mul(speed));
+        if (this.keys['KeyQ']) this.camera.position.y -= speed;
+        if (this.keys['KeyE']) this.camera.position.y += speed;
+    }
+
+    render() {
+        const data = this.imageData.data;
+        const width = this.renderWidth, height = this.renderHeight;
+        this.totalSteps = 0; this.totalRays = width * height;
+        const skyTop = {r:25,g:25,b:112}, skyBottom = {r:135,g:206,b:235};
+        const lightDir = new Vec3(0.5, 0.8, 0.3).normalize();
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const rayDir = this.camera.getRayDirection(x, y, width, height);
+                const result = this.traversal.traverse(this.camera.position, rayDir);
+                this.totalSteps += result.steps;
+                const idx = (y * width + x) * 4;
+
+                if (result.hit) {
+                    if (this.showSteps) {
+                        const intensity = Math.min(255, (result.steps / this.traversal.maxSteps) * 255);
+                        data[idx] = intensity; data[idx + 1] = 255 - intensity; data[idx + 2] = 0;
+                    } else if (this.showNormals) {
+                        data[idx] = Math.floor((result.normal.x + 1) * 127.5);
+                        data[idx + 1] = Math.floor((result.normal.y + 1) * 127.5);
+                        data[idx + 2] = Math.floor((result.normal.z + 1) * 127.5);
+                    } else {
+                        const color = result.color;
+                        let r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF;
+                        const diffuse = Math.max(0.3, result.normal.dot(lightDir));
+                        const fog = Math.min(1, result.distance / 60);
+                        data[idx] = Math.floor(r * diffuse * (1 - fog) + skyBottom.r * fog);
+                        data[idx + 1] = Math.floor(g * diffuse * (1 - fog) + skyBottom.g * fog);
+                        data[idx + 2] = Math.floor(b * diffuse * (1 - fog) + skyBottom.b * fog);
+                    }
+                } else {
+                    const t = y / height;
+                    data[idx] = Math.floor(skyTop.r * (1 - t) + skyBottom.r * t);
+                    data[idx + 1] = Math.floor(skyTop.g * (1 - t) + skyBottom.g * t);
+                    data[idx + 2] = Math.floor(skyTop.b * (1 - t) + skyBottom.b * t);
+                }
+                data[idx + 3] = 255;
+            }
+        }
+        this.ctx.putImageData(this.imageData, 0, 0);
+        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.drawImage(this.canvas, 0, 0, this.renderWidth, this.renderHeight, 0, 0, this.canvas.width, this.canvas.height);
+    }
+
+    updateStats() {
+        this.frameCount++;
+        const now = performance.now();
+        if (now - this.lastFrameTime >= 1000) { this.fps = this.frameCount; this.frameCount = 0; this.lastFrameTime = now; }
+        document.getElementById('fps').textContent = this.fps;
+        document.getElementById('frame-time').textContent = (1000 / Math.max(1, this.fps)).toFixed(1) + ' ms';
+        document.getElementById('rays').textContent = this.totalRays.toLocaleString();
+        document.getElementById('avg-steps').textContent = (this.totalSteps / this.totalRays).toFixed(1);
+        document.getElementById('cam-pos').textContent = this.camera.position.toString();
+        document.getElementById('cam-dir').textContent = this.camera.getDirection().toString();
+    }
+}
+
+// Main
+const canvas = document.getElementById('canvas');
+const renderer = new VoxelRenderer(canvas);
+let lastTime = performance.now();
+
+function gameLoop() {
+    const now = performance.now();
+    const deltaTime = (now - lastTime) / 1000;
+    lastTime = now;
+    renderer.update(deltaTime);
+    renderer.render();
+    renderer.updateStats();
+    requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>
