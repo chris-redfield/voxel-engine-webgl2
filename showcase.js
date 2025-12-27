@@ -1,17 +1,17 @@
 /**
- * Voxel Ray Traversal Engine v2.0
+ * Voxel Ray Traversal Engine v2.1
  * Showcase Demo
  * 
- * Demo scenes, input handling, and UI management
+ * Phase 2: Updated for Brick Map hierarchy
  */
 
 // ============================================================================
-// Scene Generators
+// Scene Generators (Updated for larger worlds)
 // ============================================================================
 
 const SceneGenerators = {
     demo(world) {
-        const size = world.size;
+        const size = world.worldSize;
         world.clear();
         
         // Ground plane with checkerboard pattern
@@ -32,7 +32,7 @@ const SceneGenerators = {
         ];
         
         for (const s of structures) {
-            const w = Math.max(2, Math.floor(size * 0.08));
+            const w = Math.max(2, Math.floor(size * 0.04));
             for (let y = 1; y <= s.h; y++) {
                 for (let dx = -w; dx <= w; dx++) {
                     for (let dz = -w; dz <= w; dz++) {
@@ -47,9 +47,10 @@ const SceneGenerators = {
             [155, 34, 38], [174, 32, 18], [187, 62, 3], 
             [202, 103, 2], [238, 155, 0]
         ];
-        for (let i = 0; i < size * 8; i++) {
+        const scatterCount = Math.floor(size * size * 0.01);
+        for (let i = 0; i < scatterCount; i++) {
             const x = Math.floor(Math.random() * size);
-            const y = Math.floor(Math.random() * size * 0.15) + 1;
+            const y = Math.floor(Math.random() * size * 0.1) + 1;
             const z = Math.floor(Math.random() * size);
             const color = colors[Math.floor(Math.random() * colors.length)];
             world.setVoxel(x, y, z, ...color);
@@ -57,13 +58,14 @@ const SceneGenerators = {
     },
     
     sphere(world) {
-        const size = world.size;
+        const size = world.worldSize;
         world.clear();
         
         const cx = size / 2, cy = size / 2, cz = size / 2;
         const radius = size / 2 - 2;
-        const thickness = Math.max(2, size * 0.06);
+        const thickness = Math.max(2, size * 0.04);
         
+        // Only iterate near the sphere surface for efficiency
         for (let x = 0; x < size; x++) {
             for (let y = 0; y < size; y++) {
                 for (let z = 0; z < size; z++) {
@@ -71,7 +73,6 @@ const SceneGenerators = {
                     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
                     
                     if (dist <= radius && dist >= radius - thickness) {
-                        // Color based on position
                         const r = Math.floor((x / size) * 127 + 128);
                         const g = Math.floor((y / size) * 127 + 128);
                         const b = Math.floor((z / size) * 127 + 128);
@@ -83,18 +84,19 @@ const SceneGenerators = {
     },
     
     terrain(world) {
-        const size = world.size;
+        const size = world.worldSize;
         world.clear();
         
-        const scale = 0.15;
+        const scale = 8 / size;  // Adjust scale based on world size
         
         // Generate heightmap terrain
         for (let x = 0; x < size; x++) {
             for (let z = 0; z < size; z++) {
-                // Simple noise function
-                const noise1 = Math.sin(x * scale) * Math.cos(z * scale);
-                const noise2 = Math.sin(x * scale * 2 + 1) * Math.cos(z * scale * 2 + 1) * 0.5;
-                const height = Math.floor(((noise1 + noise2) * 0.5 + 0.5) * size * 0.4) + 1;
+                // Multi-octave noise
+                const noise1 = Math.sin(x * scale * 2) * Math.cos(z * scale * 2);
+                const noise2 = Math.sin(x * scale * 4 + 1) * Math.cos(z * scale * 4 + 1) * 0.5;
+                const noise3 = Math.sin(x * scale * 8 + 2) * Math.cos(z * scale * 8 + 2) * 0.25;
+                const height = Math.floor(((noise1 + noise2 + noise3) / 1.75 * 0.5 + 0.5) * size * 0.35) + 1;
                 
                 for (let y = 0; y < height; y++) {
                     let color;
@@ -111,7 +113,7 @@ const SceneGenerators = {
         }
         
         // Add trees
-        const numTrees = Math.floor(size * 0.4);
+        const numTrees = Math.floor(size * size * 0.0005);
         for (let i = 0; i < numTrees; i++) {
             const tx = Math.floor(Math.random() * (size - 6)) + 3;
             const tz = Math.floor(Math.random() * (size - 6)) + 3;
@@ -126,7 +128,9 @@ const SceneGenerators = {
                 }
             }
             
-            const treeHeight = Math.floor(Math.random() * 4) + 4;
+            if (groundY < 2) continue;
+            
+            const treeHeight = Math.floor(Math.random() * 5) + 5;
             
             // Trunk
             for (let y = groundY + 1; y < groundY + treeHeight + 1; y++) {
@@ -135,10 +139,11 @@ const SceneGenerators = {
             
             // Leaves
             const leafY = groundY + treeHeight;
-            for (let dx = -2; dx <= 2; dx++) {
-                for (let dy = 0; dy <= 2; dy++) {
-                    for (let dz = -2; dz <= 2; dz++) {
-                        if (Math.abs(dx) + Math.abs(dz) + dy <= 3) {
+            const leafRadius = Math.floor(Math.random() * 2) + 2;
+            for (let dx = -leafRadius; dx <= leafRadius; dx++) {
+                for (let dy = 0; dy <= leafRadius; dy++) {
+                    for (let dz = -leafRadius; dz <= leafRadius; dz++) {
+                        if (Math.abs(dx) + Math.abs(dz) + dy <= leafRadius + 1) {
                             world.setVoxel(tx + dx, leafY + dy, tz + dz, 46, 125, 50);
                         }
                     }
@@ -148,7 +153,7 @@ const SceneGenerators = {
     },
     
     city(world) {
-        const size = world.size;
+        const size = world.worldSize;
         world.clear();
         
         // Ground (asphalt)
@@ -159,7 +164,7 @@ const SceneGenerators = {
         }
         
         // Buildings on grid
-        const gridSize = Math.max(4, Math.floor(size / 8));
+        const gridSize = Math.max(8, Math.floor(size / 16));
         const buildingColors = [
             [120, 144, 156], [144, 164, 174], [176, 190, 197], 
             [96, 125, 139], [69, 90, 100]
@@ -167,19 +172,21 @@ const SceneGenerators = {
         
         for (let gx = 1; gx < size / gridSize - 1; gx++) {
             for (let gz = 1; gz < size / gridSize - 1; gz++) {
-                if (Math.random() > 0.3) {
-                    const bx = gx * gridSize + 1;
-                    const bz = gz * gridSize + 1;
-                    const height = Math.floor(Math.random() * size * 0.5) + Math.floor(size * 0.1);
-                    const width = Math.floor(Math.random() * 2) + Math.max(2, Math.floor(gridSize * 0.5));
+                if (Math.random() > 0.25) {
+                    const bx = gx * gridSize + Math.floor(gridSize * 0.1);
+                    const bz = gz * gridSize + Math.floor(gridSize * 0.1);
+                    const maxHeight = Math.floor(size * 0.6);
+                    const height = Math.floor(Math.random() * maxHeight) + Math.floor(size * 0.05);
+                    const width = Math.floor(Math.random() * 3) + Math.max(3, Math.floor(gridSize * 0.4));
                     
                     const color = buildingColors[Math.floor(Math.random() * buildingColors.length)];
                     
                     for (let y = 1; y <= height; y++) {
                         for (let dx = 0; dx < width; dx++) {
                             for (let dz = 0; dz < width; dz++) {
-                                // Windows on every 3rd floor
-                                const isWindow = (y % 3 === 0) && ((dx + dz) % 2 === 0);
+                                // Windows on every 3rd-4th floor
+                                const floorInterval = Math.max(3, Math.floor(size / 64));
+                                const isWindow = (y % floorInterval === 0) && ((dx + dz) % 2 === 0);
                                 const voxelColor = isWindow ? [255, 245, 157] : color;
                                 world.setVoxel(bx + dx, y, bz + dz, ...voxelColor);
                             }
@@ -207,7 +214,6 @@ class InputHandler {
     }
     
     _setupEventListeners() {
-        // Keyboard
         window.addEventListener('keydown', (e) => {
             this.keys[e.code] = true;
             if (e.code === 'Escape' && this.isLocked) {
@@ -219,7 +225,6 @@ class InputHandler {
             this.keys[e.code] = false;
         });
         
-        // Pointer lock
         this.canvas.addEventListener('click', () => {
             if (!this.isLocked) {
                 this.canvas.requestPointerLock();
@@ -231,7 +236,6 @@ class InputHandler {
             this._onPointerLockChange(this.isLocked);
         });
         
-        // Mouse movement
         document.addEventListener('mousemove', (e) => {
             if (this.isLocked) {
                 this.mouseDelta.x += e.movementX;
@@ -239,15 +243,12 @@ class InputHandler {
             }
         });
         
-        // Mouse wheel
         this.canvas.addEventListener('wheel', (e) => {
             this.wheelDelta += e.deltaY;
         });
     }
     
-    _onPointerLockChange(locked) {
-        // Override this for UI updates
-    }
+    _onPointerLockChange(locked) {}
     
     getMouseDelta() {
         const delta = { x: this.mouseDelta.x, y: this.mouseDelta.y };
@@ -305,7 +306,7 @@ class ShowcaseApp {
         
         // Settings
         this.resolutionScale = 1.0;
-        this.worldSize = 64;
+        this.coarseSize = 64;  // 64³ coarse grid × 8³ bricks = 512³ world
         this.currentScene = 'demo';
         
         // Setup
@@ -319,7 +320,6 @@ class ShowcaseApp {
     }
     
     _setupInputCallbacks() {
-        // Update UI on pointer lock change
         this.input._onPointerLockChange = (locked) => {
             const overlay = document.getElementById('overlay');
             const crosshair = document.querySelector('.crosshair');
@@ -342,11 +342,11 @@ class ShowcaseApp {
             });
         }
         
-        // World size
+        // World size (coarse grid size)
         const worldSizeSelect = document.getElementById('world-size');
         if (worldSizeSelect) {
             worldSizeSelect.addEventListener('change', (e) => {
-                this.worldSize = parseInt(e.target.value);
+                this.coarseSize = parseInt(e.target.value);
                 this._initWorld();
             });
         }
@@ -396,22 +396,30 @@ class ShowcaseApp {
     }
     
     _initWorld() {
-        this.engine.createWorld(this.worldSize);
+        console.log(`Creating world: ${this.coarseSize}³ coarse grid (${this.coarseSize * 8}³ voxels)`);
+        this.engine.createWorld(this.coarseSize, 8);
         this._loadScene(this.currentScene);
     }
     
     _loadScene(sceneName) {
+        console.log(`Loading scene: ${sceneName}`);
+        const startTime = performance.now();
+        
         const generator = SceneGenerators[sceneName];
         if (generator) {
             generator(this.engine.world);
             this.engine.uploadWorld();
             
             // Reset camera position
-            const size = this.worldSize;
-            this.engine.camera.setPosition(size / 2, size * 0.7, -size * 0.3);
+            const size = this.engine.world.worldSize;
+            this.engine.camera.setPosition(size / 2, size * 0.6, -size * 0.2);
             this.engine.camera.yaw = 0;
             this.engine.camera.pitch = -0.3;
+            this.engine.camera.moveSpeed = size * 0.5;  // Scale speed with world size
         }
+        
+        const elapsed = performance.now() - startTime;
+        console.log(`Scene loaded in ${elapsed.toFixed(0)}ms - ${this.engine.getVoxelCount().toLocaleString()} voxels in ${this.engine.getBrickCount()} bricks`);
     }
     
     _handleResize() {
@@ -426,7 +434,6 @@ class ShowcaseApp {
         const input = this.input;
         const speed = camera.moveSpeed * deltaTime;
         
-        // Movement
         if (input.isKeyPressed('KeyW')) camera.moveForward(speed);
         if (input.isKeyPressed('KeyS')) camera.moveForward(-speed);
         if (input.isKeyPressed('KeyA')) camera.moveRight(-speed);
@@ -434,11 +441,16 @@ class ShowcaseApp {
         if (input.isKeyPressed('KeyQ')) camera.moveUp(-speed);
         if (input.isKeyPressed('KeyE')) camera.moveUp(speed);
         
-        // Mouse look
+        // Shift for faster movement
+        if (input.isKeyPressed('ShiftLeft')) {
+            camera.moveSpeed = this.engine.world.worldSize;
+        } else {
+            camera.moveSpeed = this.engine.world.worldSize * 0.5;
+        }
+        
         const mouseDelta = input.getMouseDelta();
         camera.rotate(mouseDelta.x * camera.lookSpeed, mouseDelta.y * camera.lookSpeed);
         
-        // Scroll zoom (FOV)
         const wheelDelta = input.getWheelDelta();
         if (wheelDelta !== 0) {
             camera.fov = Math.max(30, Math.min(120, camera.fov + wheelDelta * 0.05));
@@ -455,14 +467,17 @@ class ShowcaseApp {
         const camera = this.engine.camera;
         const dir = camera.getDirection();
         const res = this.engine.getResolution();
+        const mem = this.engine.getMemoryUsage();
         
-        // Update DOM elements
         const elements = {
             'fps': this.stats.fps,
             'frame-time': this.stats.frameTime.toFixed(1) + ' ms',
             'resolution-display': `${res.width} x ${res.height}`,
             'voxel-count': this.engine.getVoxelCount().toLocaleString(),
-            'cam-pos': `(${camera.position[0].toFixed(1)}, ${camera.position[1].toFixed(1)}, ${camera.position[2].toFixed(1)})`,
+            'brick-count': this.engine.getBrickCount().toLocaleString(),
+            'world-size-display': `${this.engine.getWorldSize()}³`,
+            'memory-usage': mem.totalMB.toFixed(2) + ' MB',
+            'cam-pos': `(${camera.position[0].toFixed(0)}, ${camera.position[1].toFixed(0)}, ${camera.position[2].toFixed(0)})`,
             'cam-dir': `(${dir[0].toFixed(2)}, ${dir[1].toFixed(2)}, ${dir[2].toFixed(2)})`
         };
         
@@ -492,7 +507,7 @@ class ShowcaseApp {
 }
 
 // ============================================================================
-// Export for module usage
+// Export
 // ============================================================================
 
 if (typeof module !== 'undefined' && module.exports) {

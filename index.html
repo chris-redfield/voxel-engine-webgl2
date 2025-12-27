@@ -3,11 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voxel Ray Traversal Engine v2.0</title>
+    <title>Voxel Ray Traversal Engine v2.1 - Brick Maps</title>
     <style>
-        /* ============================================
-           Reset & Base
-           ============================================ */
         * {
             margin: 0;
             padding: 0;
@@ -21,9 +18,6 @@
             overflow: hidden;
         }
         
-        /* ============================================
-           Layout
-           ============================================ */
         #container {
             display: flex;
             height: 100vh;
@@ -45,11 +39,8 @@
             height: 100%;
         }
         
-        /* ============================================
-           Sidebar UI
-           ============================================ */
         #ui {
-            width: 280px;
+            width: 300px;
             background: #16213e;
             padding: 20px;
             overflow-y: auto;
@@ -68,7 +59,7 @@
         }
         
         h2 {
-            font-size: 0.95em;
+            font-size: 0.9em;
             margin: 15px 0 10px;
             color: #0f3460;
             background: #e94560;
@@ -76,12 +67,11 @@
             border-radius: 4px;
         }
         
-        /* Stats display */
         .stat {
             display: flex;
             justify-content: space-between;
-            margin: 8px 0;
-            font-size: 0.85em;
+            margin: 6px 0;
+            font-size: 0.82em;
         }
         
         .stat-label {
@@ -97,7 +87,10 @@
             color: #ffd700;
         }
         
-        /* Controls */
+        .stat-value.new {
+            color: #ff6b9d;
+        }
+        
         .control-group {
             margin: 10px 0;
         }
@@ -134,7 +127,6 @@
             outline: 2px solid #e94560;
         }
         
-        /* Info box */
         .info {
             background: #0f3460;
             padding: 10px;
@@ -154,7 +146,6 @@
             font-size: 0.9em;
         }
         
-        /* Badge */
         .badge {
             display: inline-block;
             background: #4ecca3;
@@ -167,9 +158,24 @@
             vertical-align: middle;
         }
         
-        /* ============================================
-           Overlay & Crosshair
-           ============================================ */
+        .badge.phase2 {
+            background: #ff6b9d;
+            color: #fff;
+        }
+        
+        .tech-note {
+            background: #0a1628;
+            border-left: 3px solid #4ecca3;
+            padding: 8px 10px;
+            margin: 10px 0;
+            font-size: 0.75em;
+            color: #aaa;
+        }
+        
+        .tech-note strong {
+            color: #4ecca3;
+        }
+        
         #overlay {
             position: absolute;
             top: 50%;
@@ -234,21 +240,10 @@
             transform: translateY(-50%);
         }
         
-        /* ============================================
-           Responsive
-           ============================================ */
         @media (max-width: 768px) {
             #ui {
-                width: 240px;
+                width: 260px;
                 padding: 15px;
-            }
-            
-            h1 {
-                font-size: 1.1em;
-            }
-            
-            .stat {
-                font-size: 0.8em;
             }
         }
         
@@ -271,27 +266,31 @@
 </head>
 <body>
     <div id="container">
-        <!-- Canvas Area -->
         <div id="canvas-container">
             <canvas id="canvas"></canvas>
             
-            <!-- Start Overlay -->
             <div id="overlay">
                 <h2>Click to Start</h2>
                 <p>Use WASD to move, mouse to look</p>
             </div>
             
-            <!-- Crosshair -->
             <div class="crosshair"></div>
         </div>
         
-        <!-- Sidebar UI -->
         <div id="ui">
             <h1>🎮 Voxel Ray Traversal</h1>
-            <div class="version">v2.0 - WebGL2 GPU Accelerated <span class="badge">NEW</span></div>
+            <div class="version">
+                v2.1 - Brick Map Hierarchy 
+                <span class="badge phase2">PHASE 2</span>
+            </div>
             
-            <!-- Statistics Section -->
-            <h2>📊 Statistics</h2>
+            <div class="tech-note">
+                <strong>Brick Maps:</strong> 2-level hierarchy with 8³ bricks. 
+                Empty space skipped in O(1). Sparse storage for massive worlds.
+            </div>
+            
+            <!-- Performance Stats -->
+            <h2>📊 Performance</h2>
             <div class="stat">
                 <span class="stat-label">FPS</span>
                 <span class="stat-value highlight" id="fps">0</span>
@@ -304,12 +303,27 @@
                 <span class="stat-label">Resolution</span>
                 <span class="stat-value" id="resolution-display">0 x 0</span>
             </div>
+            
+            <!-- World Stats -->
+            <h2>🌍 World</h2>
+            <div class="stat">
+                <span class="stat-label">World Size</span>
+                <span class="stat-value new" id="world-size-display">0³</span>
+            </div>
             <div class="stat">
                 <span class="stat-label">Voxels</span>
                 <span class="stat-value" id="voxel-count">0</span>
             </div>
+            <div class="stat">
+                <span class="stat-label">Active Bricks</span>
+                <span class="stat-value new" id="brick-count">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Memory</span>
+                <span class="stat-value new" id="memory-usage">0 MB</span>
+            </div>
             
-            <!-- Camera Section -->
+            <!-- Camera -->
             <h2>📷 Camera</h2>
             <div class="stat">
                 <span class="stat-label">Position</span>
@@ -320,7 +334,7 @@
                 <span class="stat-value" id="cam-dir">(0, 0, 0)</span>
             </div>
             
-            <!-- Settings Section -->
+            <!-- Settings -->
             <h2>⚙️ Settings</h2>
             
             <div class="control-group">
@@ -330,17 +344,17 @@
             </div>
             
             <div class="control-group">
-                <label>World Size</label>
+                <label>World Size (Coarse Grid × 8³ Bricks)</label>
                 <select id="world-size">
-                    <option value="32">32³ (32K voxels)</option>
-                    <option value="64" selected>64³ (262K voxels)</option>
-                    <option value="128">128³ (2M voxels)</option>
-                    <option value="256">256³ (16M voxels)</option>
+                    <option value="16">128³ (2M potential voxels)</option>
+                    <option value="32">256³ (16M potential voxels)</option>
+                    <option value="64" selected>512³ (134M potential voxels)</option>
+                    <option value="128">1024³ (1B potential voxels)</option>
                 </select>
             </div>
             
             <div class="control-group">
-                <label>Max Steps</label>
+                <label>Max Steps (Coarse Level)</label>
                 <input type="range" id="max-steps" min="64" max="512" step="64" value="256">
                 <span class="stat-value" id="max-steps-val">256</span>
             </div>
@@ -375,7 +389,7 @@
                 </label>
             </div>
             
-            <!-- Controls Info -->
+            <!-- Controls -->
             <div class="info">
                 <strong>Controls:</strong><br>
                 <span class="key">W</span>
@@ -384,6 +398,7 @@
                 <span class="key">D</span> - Move<br>
                 <span class="key">Q</span>
                 <span class="key">E</span> - Up/Down<br>
+                <span class="key">Shift</span> - Fast move<br>
                 <span class="key">Mouse</span> - Look<br>
                 <span class="key">Scroll</span> - Zoom<br>
                 <span class="key">ESC</span> - Release cursor
@@ -391,15 +406,14 @@
         </div>
     </div>
     
-    <!-- Engine Scripts -->
     <script src="engine.js"></script>
     <script src="showcase.js"></script>
     
-    <!-- Initialize Application -->
     <script>
-        // Start the showcase app when page loads
-        const app = new ShowcaseApp('canvas');
-        app.run();
+        document.addEventListener('DOMContentLoaded', () => {
+            const app = new ShowcaseApp('canvas');
+            app.run();
+        });
     </script>
 </body>
 </html>

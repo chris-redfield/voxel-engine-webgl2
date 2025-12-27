@@ -1,8 +1,11 @@
 /**
- * Voxel Ray Traversal Engine v2.0
+ * Voxel Ray Traversal Engine v2.1
  * WebGL2 GPU-Accelerated Voxel Renderer
  * 
- * Core engine module - handles rendering, camera, and voxel data
+ * Phase 2: Brick Map Hierarchy
+ * - 2-level structure: Coarse Grid → 8³ Bricks
+ * - Sparse storage: only occupied regions use memory
+ * - O(1) empty space skipping at coarse level
  */
 
 // ============================================================================
@@ -22,18 +25,27 @@ void main() {
 const FRAGMENT_SHADER_SOURCE = `#version 300 es
 precision highp float;
 precision highp sampler3D;
+precision highp usampler3D;
 
 in vec2 v_uv;
 out vec4 fragColor;
 
-uniform sampler3D u_voxelData;
+// Brick map textures
+uniform usampler3D u_coarseGrid;    // Coarse grid: stores brick indices (0 = empty)
+uniform sampler3D u_brickAtlas;      // Brick atlas: packed 8³ bricks
+
+// Brick map parameters
+uniform vec3 u_coarseGridSize;       // Size of coarse grid (e.g., 64³)
+uniform vec3 u_atlasSize;            // Size of brick atlas in bricks (e.g., 32x32x32 bricks)
+uniform int u_brickSize;             // Size of each brick (8)
+
+// Camera & rendering
 uniform vec3 u_cameraPos;
 uniform vec3 u_cameraDir;
 uniform vec3 u_cameraUp;
 uniform vec3 u_cameraRight;
 uniform vec2 u_resolution;
 uniform float u_fov;
-uniform float u_worldSize;
 uniform int u_maxSteps;
 uniform int u_showNormals;
 uniform int u_enableShadows;
@@ -41,6 +53,14 @@ uniform vec3 u_lightDir;
 uniform vec3 u_skyColorTop;
 uniform vec3 u_skyColorBottom;
 uniform float u_fogDensity;
+
+// Constants
+const int BRICK_SIZE = 8;
+
+// Get world size in voxels
+vec3 getWorldSize() {
+    return u_coarseGridSize * float(BRICK_SIZE);
+}
 
 // Ray-box intersection
 vec2 intersectAABB(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax) {
@@ -53,16 +73,38 @@ vec2 intersectAABB(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax) {
     return vec2(tNear, tFar);
 }
 
-// Get voxel at position
-vec4 getVoxel(ivec3 pos) {
-    if (pos.x < 0 || pos.y < 0 || pos.z < 0 ||
-        pos.x >= int(u_worldSize) || pos.y >= int(u_worldSize) || pos.z >= int(u_worldSize)) {
-        return vec4(0.0);
+// Get brick index from coarse grid (0 = empty, >0 = brick index)
+uint getBrickIndex(ivec3 coarsePos) {
+    if (coarsePos.x < 0 || coarsePos.y < 0 || coarsePos.z < 0 ||
+        coarsePos.x >= int(u_coarseGridSize.x) || 
+        coarsePos.y >= int(u_coarseGridSize.y) || 
+        coarsePos.z >= int(u_coarseGridSize.z)) {
+        return 0u;
     }
-    return texelFetch(u_voxelData, pos, 0);
+    return texelFetch(u_coarseGrid, coarsePos, 0).r;
 }
 
-// DDA Ray Traversal
+// Convert brick index to atlas position
+ivec3 brickIndexToAtlasPos(uint brickIndex) {
+    int idx = int(brickIndex) - 1; // brick indices are 1-based (0 = empty)
+    int atlasWidth = int(u_atlasSize.x);
+    int atlasHeight = int(u_atlasSize.y);
+    int x = idx % atlasWidth;
+    int y = (idx / atlasWidth) % atlasHeight;
+    int z = idx / (atlasWidth * atlasHeight);
+    return ivec3(x, y, z);
+}
+
+// Get voxel from brick atlas
+vec4 getVoxelFromBrick(uint brickIndex, ivec3 localPos) {
+    if (brickIndex == 0u) return vec4(0.0);
+    
+    ivec3 atlasPos = brickIndexToAtlasPos(brickIndex);
+    ivec3 texelPos = atlasPos * BRICK_SIZE + localPos;
+    return texelFetch(u_brickAtlas, texelPos, 0);
+}
+
+// Hit result structure
 struct HitResult {
     bool hit;
     vec3 pos;
@@ -72,64 +114,58 @@ struct HitResult {
     int steps;
 };
 
-HitResult traceRay(vec3 origin, vec3 direction) {
-    HitResult result;
-    result.hit = false;
-    result.steps = 0;
-    result.normal = vec3(0.0);
+// DDA through a single brick
+bool traceBrick(uint brickIndex, vec3 rayOrigin, vec3 rayDir, 
+                ivec3 coarsePos, inout HitResult result) {
     
-    // Intersect with world bounds
-    vec2 tBox = intersectAABB(origin, direction, vec3(0.0), vec3(u_worldSize));
-    if (tBox.x > tBox.y || tBox.y < 0.0) {
-        return result;
-    }
+    // Brick bounds in world space
+    vec3 brickMin = vec3(coarsePos * BRICK_SIZE);
+    vec3 brickMax = brickMin + float(BRICK_SIZE);
+    
+    // Find entry point into brick
+    vec2 tBox = intersectAABB(rayOrigin, rayDir, brickMin, brickMax);
+    if (tBox.x > tBox.y || tBox.y < 0.0) return false;
     
     float tStart = max(0.0, tBox.x) + 0.001;
-    vec3 startPos = origin + direction * tStart;
+    vec3 startPos = rayOrigin + rayDir * tStart;
     
-    // Current voxel coordinates
-    ivec3 mapPos = ivec3(floor(startPos));
-    mapPos = clamp(mapPos, ivec3(0), ivec3(int(u_worldSize) - 1));
+    // Local position within brick
+    vec3 localStart = startPos - brickMin;
+    ivec3 mapPos = ivec3(floor(localStart));
+    mapPos = clamp(mapPos, ivec3(0), ivec3(BRICK_SIZE - 1));
     
-    // Step direction
-    ivec3 step = ivec3(sign(direction));
+    // DDA setup
+    ivec3 step = ivec3(sign(rayDir));
+    vec3 deltaDist = abs(vec3(1.0) / rayDir);
+    vec3 sideDist = (sign(rayDir) * (vec3(mapPos) - localStart) + (sign(rayDir) * 0.5) + 0.5) * deltaDist;
     
-    // Delta - how far along ray to move for 1 unit in each axis
-    vec3 deltaDist = abs(vec3(1.0) / direction);
-    
-    // Distance to next voxel boundary
-    vec3 sideDist = (sign(direction) * (vec3(mapPos) - startPos) + (sign(direction) * 0.5) + 0.5) * deltaDist;
-    
-    // Track which axis we crossed
     int side = 0;
     
-    // DDA loop
-    for (int i = 0; i < 512; i++) {
-        if (i >= u_maxSteps) break;
-        result.steps = i + 1;
-        
-        // Check current voxel
-        vec4 voxel = getVoxel(mapPos);
+    // DDA through brick
+    for (int i = 0; i < BRICK_SIZE * 3; i++) {
+        // Check voxel
+        vec4 voxel = getVoxelFromBrick(brickIndex, mapPos);
         if (voxel.a > 0.0) {
             result.hit = true;
             result.color = voxel;
-            result.pos = vec3(mapPos);
+            result.pos = brickMin + vec3(mapPos);
             
-            // Set normal based on side hit
+            // Normal based on side
             result.normal = vec3(0.0);
             if (side == 0) result.normal.x = -float(step.x);
             else if (side == 1) result.normal.y = -float(step.y);
             else result.normal.z = -float(step.z);
             
-            // Calculate distance
-            if (side == 0) result.distance = (float(mapPos.x) - origin.x + (1.0 - float(step.x)) / 2.0) / direction.x;
-            else if (side == 1) result.distance = (float(mapPos.y) - origin.y + (1.0 - float(step.y)) / 2.0) / direction.y;
-            else result.distance = (float(mapPos.z) - origin.z + (1.0 - float(step.z)) / 2.0) / direction.z;
+            // Distance calculation
+            vec3 worldPos = brickMin + vec3(mapPos);
+            if (side == 0) result.distance = (worldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0) / rayDir.x;
+            else if (side == 1) result.distance = (worldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0) / rayDir.y;
+            else result.distance = (worldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0) / rayDir.z;
             
-            return result;
+            return true;
         }
         
-        // DDA step - move to next voxel
+        // DDA step
         if (sideDist.x < sideDist.y) {
             if (sideDist.x < sideDist.z) {
                 sideDist.x += deltaDist.x;
@@ -152,10 +188,83 @@ HitResult traceRay(vec3 origin, vec3 direction) {
             }
         }
         
+        // Exit brick bounds
+        if (mapPos.x < 0 || mapPos.x >= BRICK_SIZE ||
+            mapPos.y < 0 || mapPos.y >= BRICK_SIZE ||
+            mapPos.z < 0 || mapPos.z >= BRICK_SIZE) {
+            break;
+        }
+    }
+    
+    return false;
+}
+
+// Main ray trace - 2-level DDA
+HitResult traceRay(vec3 origin, vec3 direction) {
+    HitResult result;
+    result.hit = false;
+    result.steps = 0;
+    result.normal = vec3(0.0);
+    
+    vec3 worldSize = getWorldSize();
+    
+    // Intersect with world bounds
+    vec2 tBox = intersectAABB(origin, direction, vec3(0.0), worldSize);
+    if (tBox.x > tBox.y || tBox.y < 0.0) {
+        return result;
+    }
+    
+    float tStart = max(0.0, tBox.x) + 0.001;
+    vec3 startPos = origin + direction * tStart;
+    
+    // Coarse grid position
+    vec3 coarseStart = startPos / float(BRICK_SIZE);
+    ivec3 coarsePos = ivec3(floor(coarseStart));
+    coarsePos = clamp(coarsePos, ivec3(0), ivec3(u_coarseGridSize) - 1);
+    
+    // DDA setup for coarse grid
+    ivec3 step = ivec3(sign(direction));
+    vec3 deltaDist = abs(vec3(float(BRICK_SIZE)) / direction);
+    vec3 sideDist = (sign(direction) * (vec3(coarsePos) - coarseStart) + (sign(direction) * 0.5) + 0.5) * deltaDist;
+    
+    // Coarse grid DDA
+    for (int i = 0; i < 512; i++) {
+        if (i >= u_maxSteps) break;
+        result.steps = i + 1;
+        
+        // Check if brick exists at this coarse position
+        uint brickIndex = getBrickIndex(coarsePos);
+        
+        if (brickIndex > 0u) {
+            // Trace through the brick
+            if (traceBrick(brickIndex, origin, direction, coarsePos, result)) {
+                return result;
+            }
+        }
+        
+        // DDA step to next coarse cell
+        if (sideDist.x < sideDist.y) {
+            if (sideDist.x < sideDist.z) {
+                sideDist.x += deltaDist.x;
+                coarsePos.x += step.x;
+            } else {
+                sideDist.z += deltaDist.z;
+                coarsePos.z += step.z;
+            }
+        } else {
+            if (sideDist.y < sideDist.z) {
+                sideDist.y += deltaDist.y;
+                coarsePos.y += step.y;
+            } else {
+                sideDist.z += deltaDist.z;
+                coarsePos.z += step.z;
+            }
+        }
+        
         // Check bounds
-        if (mapPos.x < 0 || mapPos.x >= int(u_worldSize) ||
-            mapPos.y < 0 || mapPos.y >= int(u_worldSize) ||
-            mapPos.z < 0 || mapPos.z >= int(u_worldSize)) {
+        if (coarsePos.x < 0 || coarsePos.x >= int(u_coarseGridSize.x) ||
+            coarsePos.y < 0 || coarsePos.y >= int(u_coarseGridSize.y) ||
+            coarsePos.z < 0 || coarsePos.z >= int(u_coarseGridSize.z)) {
             break;
         }
     }
@@ -163,42 +272,50 @@ HitResult traceRay(vec3 origin, vec3 direction) {
     return result;
 }
 
-// Shadow ray trace
+// Shadow ray (simplified - just check for any hit)
 float traceShadow(vec3 origin, vec3 direction) {
-    vec3 startPos = origin + direction * 0.01;
+    vec3 worldSize = getWorldSize();
+    vec3 startPos = origin + direction * 0.5;
     
-    ivec3 mapPos = ivec3(floor(startPos));
+    vec3 coarseStart = startPos / float(BRICK_SIZE);
+    ivec3 coarsePos = ivec3(floor(coarseStart));
+    
     ivec3 step = ivec3(sign(direction));
-    vec3 deltaDist = abs(vec3(1.0) / direction);
-    vec3 sideDist = (sign(direction) * (vec3(mapPos) - startPos) + (sign(direction) * 0.5) + 0.5) * deltaDist;
+    vec3 deltaDist = abs(vec3(float(BRICK_SIZE)) / direction);
+    vec3 sideDist = (sign(direction) * (vec3(coarsePos) - coarseStart) + (sign(direction) * 0.5) + 0.5) * deltaDist;
     
-    for (int i = 0; i < 128; i++) {
-        if (mapPos.x < 0 || mapPos.x >= int(u_worldSize) ||
-            mapPos.y < 0 || mapPos.y >= int(u_worldSize) ||
-            mapPos.z < 0 || mapPos.z >= int(u_worldSize)) {
+    HitResult tempResult;
+    tempResult.hit = false;
+    
+    for (int i = 0; i < 64; i++) {
+        if (coarsePos.x < 0 || coarsePos.x >= int(u_coarseGridSize.x) ||
+            coarsePos.y < 0 || coarsePos.y >= int(u_coarseGridSize.y) ||
+            coarsePos.z < 0 || coarsePos.z >= int(u_coarseGridSize.z)) {
             return 1.0;
         }
         
-        vec4 voxel = getVoxel(mapPos);
-        if (voxel.a > 0.0) {
-            return 0.3;
+        uint brickIndex = getBrickIndex(coarsePos);
+        if (brickIndex > 0u) {
+            if (traceBrick(brickIndex, origin, direction, coarsePos, tempResult)) {
+                return 0.3;
+            }
         }
         
         if (sideDist.x < sideDist.y) {
             if (sideDist.x < sideDist.z) {
                 sideDist.x += deltaDist.x;
-                mapPos.x += step.x;
+                coarsePos.x += step.x;
             } else {
                 sideDist.z += deltaDist.z;
-                mapPos.z += step.z;
+                coarsePos.z += step.z;
             }
         } else {
             if (sideDist.y < sideDist.z) {
                 sideDist.y += deltaDist.y;
-                mapPos.y += step.y;
+                coarsePos.y += step.y;
             } else {
                 sideDist.z += deltaDist.z;
-                mapPos.z += step.z;
+                coarsePos.z += step.z;
             }
         }
     }
@@ -207,7 +324,7 @@ float traceShadow(vec3 origin, vec3 direction) {
 }
 
 void main() {
-    // Calculate ray direction for this pixel
+    // Calculate ray direction
     float aspectRatio = u_resolution.x / u_resolution.y;
     float fovRad = u_fov * 3.14159265 / 180.0;
     float halfHeight = tan(fovRad / 2.0);
@@ -220,13 +337,12 @@ void main() {
     HitResult hit = traceRay(u_cameraPos, rayDir);
     
     vec3 color;
+    vec3 worldSize = getWorldSize();
     
     if (hit.hit) {
         if (u_showNormals == 1) {
-            // Visualize normals
             color = hit.normal * 0.5 + 0.5;
         } else {
-            // Basic shading
             vec3 baseColor = hit.color.rgb;
             
             // Diffuse lighting
@@ -240,14 +356,13 @@ void main() {
             }
             
             // Distance fog
-            float fog = clamp(hit.distance * u_fogDensity / u_worldSize, 0.0, 1.0);
+            float fog = clamp(hit.distance * u_fogDensity / worldSize.x, 0.0, 1.0);
             vec3 fogColor = mix(u_skyColorTop, u_skyColorBottom, 0.5);
             
             color = baseColor * diffuse * shadow;
             color = mix(color, fogColor, fog * 0.8);
         }
     } else {
-        // Sky gradient
         color = mix(u_skyColorTop, u_skyColorBottom, v_uv.y);
     }
     
@@ -282,11 +397,7 @@ class Camera {
     }
     
     getRight() {
-        return [
-            Math.cos(this.yaw),
-            0,
-            -Math.sin(this.yaw)
-        ];
+        return [Math.cos(this.yaw), 0, -Math.sin(this.yaw)];
     }
     
     getUp() {
@@ -324,62 +435,191 @@ class Camera {
 }
 
 // ============================================================================
-// Voxel World Class
+// Brick Map World Class
 // ============================================================================
 
-class VoxelWorld {
-    constructor(size) {
-        this.size = size;
-        this.data = new Uint8Array(size * size * size * 4);
+class BrickMapWorld {
+    constructor(coarseSize, brickSize = 8) {
+        this.coarseSize = coarseSize;  // e.g., 64 for 64³ coarse grid
+        this.brickSize = brickSize;     // 8 for 8³ bricks
+        this.worldSize = coarseSize * brickSize;  // Effective voxel resolution
+        
+        // Coarse grid: stores brick indices (0 = empty, 1+ = brick index)
+        this.coarseGrid = new Uint32Array(coarseSize * coarseSize * coarseSize);
+        
+        // Brick storage
+        this.bricks = new Map();  // Map<brickIndex, Uint8Array>
+        this.nextBrickIndex = 1;
+        
+        // Atlas configuration
+        this.atlasSize = 64;  // 64³ bricks = up to 262,144 bricks
+        this.brickAtlasData = null;
+        
+        // Stats
         this.voxelCount = 0;
+        this.brickCount = 0;
     }
     
-    clear() {
-        this.data.fill(0);
-        this.voxelCount = 0;
+    _getCoarseIndex(cx, cy, cz) {
+        if (cx < 0 || cx >= this.coarseSize || 
+            cy < 0 || cy >= this.coarseSize || 
+            cz < 0 || cz >= this.coarseSize) {
+            return -1;
+        }
+        return cx + cy * this.coarseSize + cz * this.coarseSize * this.coarseSize;
+    }
+    
+    _worldToCoarse(x, y, z) {
+        return [
+            Math.floor(x / this.brickSize),
+            Math.floor(y / this.brickSize),
+            Math.floor(z / this.brickSize)
+        ];
+    }
+    
+    _worldToLocal(x, y, z) {
+        return [
+            x % this.brickSize,
+            y % this.brickSize,
+            z % this.brickSize
+        ];
+    }
+    
+    _getBrickLocalIndex(lx, ly, lz) {
+        return (lx + ly * this.brickSize + lz * this.brickSize * this.brickSize) * 4;
+    }
+    
+    _getOrCreateBrick(cx, cy, cz) {
+        const coarseIdx = this._getCoarseIndex(cx, cy, cz);
+        if (coarseIdx < 0) return null;
+        
+        let brickIndex = this.coarseGrid[coarseIdx];
+        
+        if (brickIndex === 0) {
+            // Create new brick
+            brickIndex = this.nextBrickIndex++;
+            this.coarseGrid[coarseIdx] = brickIndex;
+            
+            // Allocate brick data (8³ × 4 bytes RGBA)
+            const brickData = new Uint8Array(this.brickSize * this.brickSize * this.brickSize * 4);
+            this.bricks.set(brickIndex, brickData);
+            this.brickCount++;
+        }
+        
+        return this.bricks.get(brickIndex);
     }
     
     setVoxel(x, y, z, r, g, b, a = 255) {
-        if (x < 0 || x >= this.size || y < 0 || y >= this.size || z < 0 || z >= this.size) {
+        if (x < 0 || x >= this.worldSize || 
+            y < 0 || y >= this.worldSize || 
+            z < 0 || z >= this.worldSize) {
             return false;
         }
-        const idx = (x + y * this.size + z * this.size * this.size) * 4;
-        this.data[idx] = r;
-        this.data[idx + 1] = g;
-        this.data[idx + 2] = b;
-        this.data[idx + 3] = a;
+        
+        const [cx, cy, cz] = this._worldToCoarse(x, y, z);
+        const [lx, ly, lz] = this._worldToLocal(x, y, z);
+        
+        const brick = this._getOrCreateBrick(cx, cy, cz);
+        if (!brick) return false;
+        
+        const idx = this._getBrickLocalIndex(lx, ly, lz);
+        brick[idx] = r;
+        brick[idx + 1] = g;
+        brick[idx + 2] = b;
+        brick[idx + 3] = a;
+        
         return true;
     }
     
     getVoxel(x, y, z) {
-        if (x < 0 || x >= this.size || y < 0 || y >= this.size || z < 0 || z >= this.size) {
+        if (x < 0 || x >= this.worldSize || 
+            y < 0 || y >= this.worldSize || 
+            z < 0 || z >= this.worldSize) {
             return null;
         }
-        const idx = (x + y * this.size + z * this.size * this.size) * 4;
+        
+        const [cx, cy, cz] = this._worldToCoarse(x, y, z);
+        const coarseIdx = this._getCoarseIndex(cx, cy, cz);
+        if (coarseIdx < 0) return null;
+        
+        const brickIndex = this.coarseGrid[coarseIdx];
+        if (brickIndex === 0) return { r: 0, g: 0, b: 0, a: 0 };
+        
+        const brick = this.bricks.get(brickIndex);
+        if (!brick) return null;
+        
+        const [lx, ly, lz] = this._worldToLocal(x, y, z);
+        const idx = this._getBrickLocalIndex(lx, ly, lz);
+        
         return {
-            r: this.data[idx],
-            g: this.data[idx + 1],
-            b: this.data[idx + 2],
-            a: this.data[idx + 3]
+            r: brick[idx],
+            g: brick[idx + 1],
+            b: brick[idx + 2],
+            a: brick[idx + 3]
         };
     }
     
-    removeVoxel(x, y, z) {
-        return this.setVoxel(x, y, z, 0, 0, 0, 0);
+    clear() {
+        this.coarseGrid.fill(0);
+        this.bricks.clear();
+        this.nextBrickIndex = 1;
+        this.voxelCount = 0;
+        this.brickCount = 0;
     }
     
     countVoxels() {
         this.voxelCount = 0;
-        for (let i = 3; i < this.data.length; i += 4) {
-            if (this.data[i] > 0) this.voxelCount++;
+        for (const brick of this.bricks.values()) {
+            for (let i = 3; i < brick.length; i += 4) {
+                if (brick[i] > 0) this.voxelCount++;
+            }
         }
         return this.voxelCount;
     }
     
-    resize(newSize) {
-        this.size = newSize;
-        this.data = new Uint8Array(newSize * newSize * newSize * 4);
-        this.voxelCount = 0;
+    // Build atlas texture data for GPU
+    buildAtlas() {
+        const atlasVoxelSize = this.atlasSize * this.brickSize;
+        this.brickAtlasData = new Uint8Array(atlasVoxelSize * atlasVoxelSize * atlasVoxelSize * 4);
+        
+        for (const [brickIndex, brickData] of this.bricks) {
+            const idx = brickIndex - 1;  // Convert to 0-based
+            const ax = idx % this.atlasSize;
+            const ay = Math.floor(idx / this.atlasSize) % this.atlasSize;
+            const az = Math.floor(idx / (this.atlasSize * this.atlasSize));
+            
+            // Copy brick data to atlas
+            for (let lz = 0; lz < this.brickSize; lz++) {
+                for (let ly = 0; ly < this.brickSize; ly++) {
+                    for (let lx = 0; lx < this.brickSize; lx++) {
+                        const srcIdx = (lx + ly * this.brickSize + lz * this.brickSize * this.brickSize) * 4;
+                        
+                        const atlasX = ax * this.brickSize + lx;
+                        const atlasY = ay * this.brickSize + ly;
+                        const atlasZ = az * this.brickSize + lz;
+                        const dstIdx = (atlasX + atlasY * atlasVoxelSize + atlasZ * atlasVoxelSize * atlasVoxelSize) * 4;
+                        
+                        this.brickAtlasData[dstIdx] = brickData[srcIdx];
+                        this.brickAtlasData[dstIdx + 1] = brickData[srcIdx + 1];
+                        this.brickAtlasData[dstIdx + 2] = brickData[srcIdx + 2];
+                        this.brickAtlasData[dstIdx + 3] = brickData[srcIdx + 3];
+                    }
+                }
+            }
+        }
+        
+        return this.brickAtlasData;
+    }
+    
+    getMemoryUsage() {
+        const coarseBytes = this.coarseGrid.byteLength;
+        const brickBytes = this.brickCount * this.brickSize * this.brickSize * this.brickSize * 4;
+        return {
+            coarseGrid: coarseBytes,
+            bricks: brickBytes,
+            total: coarseBytes + brickBytes,
+            totalMB: (coarseBytes + brickBytes) / (1024 * 1024)
+        };
     }
 }
 
@@ -414,7 +654,8 @@ class VoxelEngine {
         // WebGL resources
         this.program = null;
         this.vao = null;
-        this.voxelTexture = null;
+        this.coarseGridTexture = null;
+        this.brickAtlasTexture = null;
         this.locations = {};
         
         // Initialize
@@ -466,14 +707,17 @@ class VoxelEngine {
         // Get uniform/attribute locations
         this.locations = {
             a_position: gl.getAttribLocation(this.program, 'a_position'),
-            u_voxelData: gl.getUniformLocation(this.program, 'u_voxelData'),
+            u_coarseGrid: gl.getUniformLocation(this.program, 'u_coarseGrid'),
+            u_brickAtlas: gl.getUniformLocation(this.program, 'u_brickAtlas'),
+            u_coarseGridSize: gl.getUniformLocation(this.program, 'u_coarseGridSize'),
+            u_atlasSize: gl.getUniformLocation(this.program, 'u_atlasSize'),
+            u_brickSize: gl.getUniformLocation(this.program, 'u_brickSize'),
             u_cameraPos: gl.getUniformLocation(this.program, 'u_cameraPos'),
             u_cameraDir: gl.getUniformLocation(this.program, 'u_cameraDir'),
             u_cameraUp: gl.getUniformLocation(this.program, 'u_cameraUp'),
             u_cameraRight: gl.getUniformLocation(this.program, 'u_cameraRight'),
             u_resolution: gl.getUniformLocation(this.program, 'u_resolution'),
             u_fov: gl.getUniformLocation(this.program, 'u_fov'),
-            u_worldSize: gl.getUniformLocation(this.program, 'u_worldSize'),
             u_maxSteps: gl.getUniformLocation(this.program, 'u_maxSteps'),
             u_showNormals: gl.getUniformLocation(this.program, 'u_showNormals'),
             u_enableShadows: gl.getUniformLocation(this.program, 'u_enableShadows'),
@@ -496,50 +740,66 @@ class VoxelEngine {
         gl.vertexAttribPointer(this.locations.a_position, 2, gl.FLOAT, false, 0, 0);
     }
     
-    createWorld(size) {
-        this.world = new VoxelWorld(size);
-        this._createVoxelTexture();
+    createWorld(coarseSize, brickSize = 8) {
+        this.world = new BrickMapWorld(coarseSize, brickSize);
+        this._createTextures();
         return this.world;
     }
     
-    _createVoxelTexture() {
+    _createTextures() {
         const gl = this.gl;
         
-        if (this.voxelTexture) {
-            gl.deleteTexture(this.voxelTexture);
-        }
+        // Cleanup old textures
+        if (this.coarseGridTexture) gl.deleteTexture(this.coarseGridTexture);
+        if (this.brickAtlasTexture) gl.deleteTexture(this.brickAtlasTexture);
         
-        this.voxelTexture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_3D, this.voxelTexture);
+        // Create coarse grid texture (R32UI - unsigned int)
+        this.coarseGridTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_3D, this.coarseGridTexture);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
         
-        const size = this.world.size;
-        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, size, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.world.data);
+        const coarseSize = this.world.coarseSize;
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.R32UI, coarseSize, coarseSize, coarseSize, 
+                      0, gl.RED_INTEGER, gl.UNSIGNED_INT, this.world.coarseGrid);
+        
+        // Create brick atlas texture (RGBA8)
+        this.brickAtlasTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_3D, this.brickAtlasTexture);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+        
+        // Initialize empty atlas
+        const atlasVoxelSize = this.world.atlasSize * this.world.brickSize;
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, atlasVoxelSize, atlasVoxelSize, atlasVoxelSize,
+                      0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     }
     
     uploadWorld() {
         if (!this.world) return;
         
         const gl = this.gl;
-        const size = this.world.size;
         
-        gl.bindTexture(gl.TEXTURE_3D, this.voxelTexture);
-        gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, size, size, size, gl.RGBA, gl.UNSIGNED_BYTE, this.world.data);
+        // Upload coarse grid
+        gl.bindTexture(gl.TEXTURE_3D, this.coarseGridTexture);
+        const coarseSize = this.world.coarseSize;
+        gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, coarseSize, coarseSize, coarseSize,
+                         gl.RED_INTEGER, gl.UNSIGNED_INT, this.world.coarseGrid);
+        
+        // Build and upload brick atlas
+        this.world.buildAtlas();
+        gl.bindTexture(gl.TEXTURE_3D, this.brickAtlasTexture);
+        const atlasVoxelSize = this.world.atlasSize * this.world.brickSize;
+        gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, atlasVoxelSize, atlasVoxelSize, atlasVoxelSize,
+                         gl.RGBA, gl.UNSIGNED_BYTE, this.world.brickAtlasData);
         
         this.world.countVoxels();
-    }
-    
-    setWorldSize(size) {
-        if (this.world) {
-            this.world.resize(size);
-        } else {
-            this.createWorld(size);
-        }
-        this._createVoxelTexture();
     }
     
     resize(width, height) {
@@ -557,10 +817,21 @@ class VoxelEngine {
         gl.useProgram(this.program);
         gl.bindVertexArray(this.vao);
         
-        // Bind voxel texture
+        // Bind textures
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_3D, this.voxelTexture);
-        gl.uniform1i(this.locations.u_voxelData, 0);
+        gl.bindTexture(gl.TEXTURE_3D, this.coarseGridTexture);
+        gl.uniform1i(this.locations.u_coarseGrid, 0);
+        
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_3D, this.brickAtlasTexture);
+        gl.uniform1i(this.locations.u_brickAtlas, 1);
+        
+        // Brick map parameters
+        const cs = this.world.coarseSize;
+        gl.uniform3f(this.locations.u_coarseGridSize, cs, cs, cs);
+        const as = this.world.atlasSize;
+        gl.uniform3f(this.locations.u_atlasSize, as, as, as);
+        gl.uniform1i(this.locations.u_brickSize, this.world.brickSize);
         
         // Camera uniforms
         gl.uniform3fv(this.locations.u_cameraPos, camera.position);
@@ -571,9 +842,6 @@ class VoxelEngine {
         
         // Resolution
         gl.uniform2f(this.locations.u_resolution, this.canvas.width, this.canvas.height);
-        
-        // World
-        gl.uniform1f(this.locations.u_worldSize, this.world.size);
         
         // Settings
         gl.uniform1i(this.locations.u_maxSteps, this.settings.maxSteps);
@@ -597,15 +865,27 @@ class VoxelEngine {
         return this.world ? this.world.voxelCount : 0;
     }
     
+    getBrickCount() {
+        return this.world ? this.world.brickCount : 0;
+    }
+    
     getWorldSize() {
-        return this.world ? this.world.size : 0;
+        return this.world ? this.world.worldSize : 0;
+    }
+    
+    getCoarseSize() {
+        return this.world ? this.world.coarseSize : 0;
+    }
+    
+    getMemoryUsage() {
+        return this.world ? this.world.getMemoryUsage() : { total: 0, totalMB: 0 };
     }
 }
 
 // ============================================================================
-// Export for module usage
+// Export
 // ============================================================================
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { VoxelEngine, VoxelWorld, Camera };
+    module.exports = { VoxelEngine, BrickMapWorld, Camera };
 }
