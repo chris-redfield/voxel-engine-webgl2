@@ -505,7 +505,8 @@
             this.terrain = new TerrainGenerator(Math.floor(Math.random() * 100000));
             
             this.chunkSize = 32;
-            this.renderDistance = 5;
+            this.renderDistance = 5;          // Runtime dynamic loading
+            this.initialRenderDistance = 12;  // Pre-render on load (larger for mountain view)
             this.loadedChunks = new Set();
             this.attemptedChunks = new Set();  // Prevents re-trying failed chunks
             this.worldOffset = 0;
@@ -565,12 +566,15 @@
             progress(0.05, 'Generating initial chunks...');
             await this._delay(50);
             
-            // Generate initial chunks
-            const totalChunks = (this.renderDistance * 2 + 1) ** 2;
+            // Generate initial chunks centered around mountain spawn point
+            // Mountain center is at noise coords (20, 20), which is chunk (0, 0)
+            const spawnChunkX = Math.floor(20 / this.chunkSize);
+            const spawnChunkZ = Math.floor(20 / this.chunkSize);
+            const totalChunks = (this.initialRenderDistance * 2 + 1) ** 2;
             let generated = 0;
             
-            for (let cx = -this.renderDistance; cx <= this.renderDistance; cx++) {
-                for (let cz = -this.renderDistance; cz <= this.renderDistance; cz++) {
+            for (let cx = spawnChunkX - this.initialRenderDistance; cx <= spawnChunkX + this.initialRenderDistance; cx++) {
+                for (let cz = spawnChunkZ - this.initialRenderDistance; cz <= spawnChunkZ + this.initialRenderDistance; cz++) {
                     const key = `${cx},${cz}`;
                     this.attemptedChunks.add(key);
                     
