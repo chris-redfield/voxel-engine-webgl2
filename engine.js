@@ -62,10 +62,15 @@ vec3 getWorldSize() {
     return u_coarseGridSize * float(BRICK_SIZE);
 }
 
-// Ray-box intersection
+// Ray-box intersection - with safe ray direction
 vec2 intersectAABB(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax) {
-    vec3 tMin = (boxMin - rayOrigin) / rayDir;
-    vec3 tMax = (boxMax - rayOrigin) / rayDir;
+    vec3 safeDir;
+    safeDir.x = abs(rayDir.x) < 1e-8 ? (rayDir.x >= 0.0 ? 1e-8 : -1e-8) : rayDir.x;
+    safeDir.y = abs(rayDir.y) < 1e-8 ? (rayDir.y >= 0.0 ? 1e-8 : -1e-8) : rayDir.y;
+    safeDir.z = abs(rayDir.z) < 1e-8 ? (rayDir.z >= 0.0 ? 1e-8 : -1e-8) : rayDir.z;
+    
+    vec3 tMin = (boxMin - rayOrigin) / safeDir;
+    vec3 tMax = (boxMax - rayOrigin) / safeDir;
     vec3 t1 = min(tMin, tMax);
     vec3 t2 = max(tMin, tMax);
     float tNear = max(max(t1.x, t1.y), t1.z);
@@ -122,24 +127,51 @@ bool traceBrick(uint brickIndex, vec3 rayOrigin, vec3 rayDir,
     vec3 brickMin = vec3(coarsePos * BRICK_SIZE);
     vec3 brickMax = brickMin + float(BRICK_SIZE);
     
-    // Find entry point into brick
-    vec2 tBox = intersectAABB(rayOrigin, rayDir, brickMin, brickMax);
-    if (tBox.x > tBox.y || tBox.y < 0.0) return false;
+    // Safeguard ray direction to avoid division issues
+    vec3 safeRayDir = rayDir;
+    safeRayDir.x = abs(rayDir.x) < 1e-8 ? (rayDir.x >= 0.0 ? 1e-8 : -1e-8) : rayDir.x;
+    safeRayDir.y = abs(rayDir.y) < 1e-8 ? (rayDir.y >= 0.0 ? 1e-8 : -1e-8) : rayDir.y;
+    safeRayDir.z = abs(rayDir.z) < 1e-8 ? (rayDir.z >= 0.0 ? 1e-8 : -1e-8) : rayDir.z;
     
-    float tStart = max(0.0, tBox.x) + 0.001;
-    vec3 startPos = rayOrigin + rayDir * tStart;
+    // Find entry point into brick - compute t values for each axis
+    vec3 tMin = (brickMin - rayOrigin) / safeRayDir;
+    vec3 tMax = (brickMax - rayOrigin) / safeRayDir;
+    vec3 t1 = min(tMin, tMax);  // entry times
+    vec3 t2 = max(tMin, tMax);  // exit times
+    float tNear = max(max(t1.x, t1.y), t1.z);
+    float tFar = min(min(t2.x, t2.y), t2.z);
+    
+    if (tNear > tFar || tFar < 0.0) return false;
+    
+    // CRITICAL FIX: Determine which face we entered through
+    // The axis with tNear == t1.axis is the entry face
+    int side;
+    if (t1.x >= t1.y && t1.x >= t1.z) {
+        side = 0;  // entered through X face
+    } else if (t1.y >= t1.x && t1.y >= t1.z) {
+        side = 1;  // entered through Y face
+    } else {
+        side = 2;  // entered through Z face
+    }
+    
+    float tStart = max(0.0, tNear) + 0.001;
+    vec3 startPos = rayOrigin + safeRayDir * tStart;
     
     // Local position within brick
     vec3 localStart = startPos - brickMin;
     ivec3 mapPos = ivec3(floor(localStart));
     mapPos = clamp(mapPos, ivec3(0), ivec3(BRICK_SIZE - 1));
     
-    // DDA setup
-    ivec3 step = ivec3(sign(rayDir));
-    vec3 deltaDist = abs(vec3(1.0) / rayDir);
-    vec3 sideDist = (sign(rayDir) * (vec3(mapPos) - localStart) + (sign(rayDir) * 0.5) + 0.5) * deltaDist;
+    // DDA setup - step must never be 0
+    ivec3 step = ivec3(
+        safeRayDir.x >= 0.0 ? 1 : -1,
+        safeRayDir.y >= 0.0 ? 1 : -1,
+        safeRayDir.z >= 0.0 ? 1 : -1
+    );
     
-    int side = 0;
+    vec3 deltaDist = abs(vec3(1.0) / safeRayDir);
+    
+    vec3 sideDist = (vec3(step) * (vec3(mapPos) - localStart) + (vec3(step) * 0.5) + 0.5) * deltaDist;
     
     // DDA through brick
     for (int i = 0; i < BRICK_SIZE * 3; i++) {
@@ -158,9 +190,9 @@ bool traceBrick(uint brickIndex, vec3 rayOrigin, vec3 rayDir,
             
             // Distance calculation
             vec3 worldPos = brickMin + vec3(mapPos);
-            if (side == 0) result.distance = (worldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0) / rayDir.x;
-            else if (side == 1) result.distance = (worldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0) / rayDir.y;
-            else result.distance = (worldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0) / rayDir.z;
+            if (side == 0) result.distance = (worldPos.x - rayOrigin.x + (1.0 - float(step.x)) / 2.0) / safeRayDir.x;
+            else if (side == 1) result.distance = (worldPos.y - rayOrigin.y + (1.0 - float(step.y)) / 2.0) / safeRayDir.y;
+            else result.distance = (worldPos.z - rayOrigin.z + (1.0 - float(step.z)) / 2.0) / safeRayDir.z;
             
             return true;
         }
@@ -222,10 +254,20 @@ HitResult traceRay(vec3 origin, vec3 direction) {
     ivec3 coarsePos = ivec3(floor(coarseStart));
     coarsePos = clamp(coarsePos, ivec3(0), ivec3(u_coarseGridSize) - 1);
     
-    // DDA setup for coarse grid
-    ivec3 step = ivec3(sign(direction));
-    vec3 deltaDist = abs(vec3(float(BRICK_SIZE)) / direction);
-    vec3 sideDist = (sign(direction) * (vec3(coarsePos) - coarseStart) + (sign(direction) * 0.5) + 0.5) * deltaDist;
+    // Safe direction for DDA
+    vec3 safeDir;
+    safeDir.x = abs(direction.x) < 1e-8 ? (direction.x >= 0.0 ? 1e-8 : -1e-8) : direction.x;
+    safeDir.y = abs(direction.y) < 1e-8 ? (direction.y >= 0.0 ? 1e-8 : -1e-8) : direction.y;
+    safeDir.z = abs(direction.z) < 1e-8 ? (direction.z >= 0.0 ? 1e-8 : -1e-8) : direction.z;
+    
+    // DDA setup for coarse grid - step must never be 0
+    ivec3 step = ivec3(
+        safeDir.x >= 0.0 ? 1 : -1,
+        safeDir.y >= 0.0 ? 1 : -1,
+        safeDir.z >= 0.0 ? 1 : -1
+    );
+    vec3 deltaDist = abs(vec3(float(BRICK_SIZE)) / safeDir);
+    vec3 sideDist = (vec3(step) * (vec3(coarsePos) - coarseStart) + (vec3(step) * 0.5) + 0.5) * deltaDist;
     
     // Coarse grid DDA
     for (int i = 0; i < 512; i++) {
@@ -280,9 +322,19 @@ float traceShadow(vec3 origin, vec3 direction) {
     vec3 coarseStart = startPos / float(BRICK_SIZE);
     ivec3 coarsePos = ivec3(floor(coarseStart));
     
-    ivec3 step = ivec3(sign(direction));
-    vec3 deltaDist = abs(vec3(float(BRICK_SIZE)) / direction);
-    vec3 sideDist = (sign(direction) * (vec3(coarsePos) - coarseStart) + (sign(direction) * 0.5) + 0.5) * deltaDist;
+    // Safe direction for DDA
+    vec3 safeDir;
+    safeDir.x = abs(direction.x) < 1e-8 ? (direction.x >= 0.0 ? 1e-8 : -1e-8) : direction.x;
+    safeDir.y = abs(direction.y) < 1e-8 ? (direction.y >= 0.0 ? 1e-8 : -1e-8) : direction.y;
+    safeDir.z = abs(direction.z) < 1e-8 ? (direction.z >= 0.0 ? 1e-8 : -1e-8) : direction.z;
+    
+    ivec3 step = ivec3(
+        safeDir.x >= 0.0 ? 1 : -1,
+        safeDir.y >= 0.0 ? 1 : -1,
+        safeDir.z >= 0.0 ? 1 : -1
+    );
+    vec3 deltaDist = abs(vec3(float(BRICK_SIZE)) / safeDir);
+    vec3 sideDist = (vec3(step) * (vec3(coarsePos) - coarseStart) + (vec3(step) * 0.5) + 0.5) * deltaDist;
     
     HitResult tempResult;
     tempResult.hit = false;
