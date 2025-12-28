@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voxel Engine Benchmark - Minecraft Terrain</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #1a1a2e;
+            color: #eee;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            overflow: hidden;
+        }
+        
+        #container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        #canvas-container {
+            flex: 1;
+            position: relative;
+            cursor: crosshair;
+        }
+        
+        #canvas-container.locked {
+            cursor: none;
+        }
+        
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        
+        #ui {
+            width: 320px;
+            background: #16213e;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        
+        h1 {
+            font-size: 1.3em;
+            margin-bottom: 5px;
+            color: #4ecca3;
+        }
+        
+        .subtitle {
+            font-size: 0.8em;
+            color: #888;
+            margin-bottom: 15px;
+        }
+        
+        h2 {
+            font-size: 0.9em;
+            margin: 15px 0 10px;
+            color: #0f3460;
+            background: #e94560;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        
+        h2.benchmark {
+            background: #ffd700;
+            color: #0f3460;
+        }
+        
+        .stat {
+            display: flex;
+            justify-content: space-between;
+            margin: 6px 0;
+            font-size: 0.85em;
+        }
+        
+        .stat-label {
+            color: #888;
+        }
+        
+        .stat-value {
+            color: #4ecca3;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        
+        .stat-value.highlight {
+            color: #ffd700;
+            font-size: 1.1em;
+            font-weight: bold;
+        }
+        
+        .stat-value.important {
+            color: #ff6b9d;
+            font-weight: bold;
+        }
+        
+        .benchmark-box {
+            background: #0a1628;
+            border: 2px solid #ffd700;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        
+        .benchmark-box .big-number {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #ffd700;
+            text-align: center;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        
+        .benchmark-box .big-label {
+            text-align: center;
+            color: #888;
+            font-size: 0.85em;
+            margin-top: 5px;
+        }
+        
+        .info {
+            background: #0f3460;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            line-height: 1.5;
+            margin-top: 15px;
+        }
+        
+        .key {
+            display: inline-block;
+            background: #e94560;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            margin: 1px;
+            font-size: 0.9em;
+        }
+        
+        .warning {
+            background: #3d1a1a;
+            border-left: 3px solid #e94560;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 0.8em;
+            color: #ffaaaa;
+        }
+        
+        .note {
+            background: #1a3d1a;
+            border-left: 3px solid #4ecca3;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 0.8em;
+            color: #aaffaa;
+        }
+        
+        #overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            pointer-events: none;
+            opacity: 1;
+            transition: opacity 0.3s ease;
+        }
+        
+        #overlay.hidden {
+            opacity: 0;
+        }
+        
+        #overlay h2 {
+            background: none;
+            color: #fff;
+            font-size: 1.5em;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        }
+        
+        #overlay p {
+            color: #aaa;
+            margin-top: 10px;
+        }
+        
+        .crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+        }
+        
+        .crosshair.visible {
+            opacity: 0.7;
+        }
+        
+        .crosshair::before,
+        .crosshair::after {
+            content: '';
+            position: absolute;
+            background: #fff;
+        }
+        
+        .crosshair::before {
+            width: 2px;
+            height: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        
+        .crosshair::after {
+            width: 100%;
+            height: 2px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 40px;
+            border-radius: 10px;
+            z-index: 100;
+        }
+        
+        #loading h2 {
+            background: none;
+            color: #ffd700;
+            font-size: 1.5em;
+            margin-bottom: 20px;
+        }
+        
+        #loading-progress {
+            width: 300px;
+            height: 20px;
+            background: #0f3460;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+        
+        #loading-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4ecca3, #ffd700);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        #loading-text {
+            color: #888;
+            font-size: 0.9em;
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="canvas-container">
+            <canvas id="canvas"></canvas>
+            
+            <div id="loading">
+                <h2>🌍 Generating Terrain...</h2>
+                <div id="loading-progress">
+                    <div id="loading-bar"></div>
+                </div>
+                <div id="loading-text">Initializing...</div>
+            </div>
+            
+            <div id="overlay" class="hidden">
+                <h2>Click to Start</h2>
+                <p>WASD to move, Mouse to look</p>
+            </div>
+            
+            <div class="crosshair"></div>
+        </div>
+        
+        <div id="ui">
+            <h1>⏱️ Engine Benchmark</h1>
+            <div class="subtitle">Minecraft-style Terrain Test</div>
+            
+            <div class="note">
+                <strong>How to compare:</strong> Drop this file in folders with different engine.js versions and compare the render times!
+            </div>
+            
+            <!-- Main Benchmark Result -->
+            <h2 class="benchmark">🏆 Benchmark Results</h2>
+            
+            <div class="benchmark-box">
+                <div class="big-number" id="avg-render-time">--</div>
+                <div class="big-label">Average Render Time (ms)</div>
+            </div>
+            
+            <div class="stat">
+                <span class="stat-label">Min Render Time</span>
+                <span class="stat-value important" id="min-render-time">-- ms</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Max Render Time</span>
+                <span class="stat-value important" id="max-render-time">-- ms</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Std Deviation</span>
+                <span class="stat-value" id="std-dev">-- ms</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Samples</span>
+                <span class="stat-value" id="sample-count">0</span>
+            </div>
+            
+            <!-- Performance Stats -->
+            <h2>📊 Real-time Stats</h2>
+            <div class="stat">
+                <span class="stat-label">FPS (vsync limited)</span>
+                <span class="stat-value highlight" id="fps">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Frame Time</span>
+                <span class="stat-value" id="frame-time">0 ms</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">GPU Render Time</span>
+                <span class="stat-value important" id="render-time">0 ms</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Resolution</span>
+                <span class="stat-value" id="resolution-display">0 x 0</span>
+            </div>
+            
+            <!-- World Stats -->
+            <h2>🌍 World Info</h2>
+            <div class="stat">
+                <span class="stat-label">World Size</span>
+                <span class="stat-value" id="world-size-display">0³</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Total Voxels</span>
+                <span class="stat-value" id="voxel-count">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Active Bricks</span>
+                <span class="stat-value" id="brick-count">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Memory Usage</span>
+                <span class="stat-value" id="memory-usage">0 MB</span>
+            </div>
+            
+            <!-- Camera -->
+            <h2>📷 Camera</h2>
+            <div class="stat">
+                <span class="stat-label">Position</span>
+                <span class="stat-value" id="cam-pos">(0, 0, 0)</span>
+            </div>
+            
+            <div class="warning">
+                <strong>Note:</strong> FPS is capped at 60 by browser vsync. Compare using <strong>GPU Render Time</strong> and <strong>Average Render Time</strong> instead!
+            </div>
+            
+            <!-- Controls -->
+            <div class="info">
+                <strong>Controls:</strong><br>
+                <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> Move<br>
+                <span class="key">Q</span><span class="key">E</span> Up/Down<br>
+                <span class="key">Shift</span> Fast move<br>
+                <span class="key">Mouse</span> Look around<br>
+                <span class="key">ESC</span> Release cursor
+            </div>
+        </div>
+    </div>
+    
+    <!-- Load engine from same folder -->
+    <script src="engine.js"></script>
+    
+    <script>
+        // ================================================================
+        // Minecraft-style Terrain Generator
+        // ================================================================
+        
+        function generateMinecraftTerrain(world, onProgress) {
+            const size = world.worldSize;
+            world.clear();
+            
+            // Noise function (simple but effective)
+            function noise2D(x, z, scale, seed) {
+                const nx = x * scale + seed;
+                const nz = z * scale + seed * 1.5;
+                return (Math.sin(nx) * Math.cos(nz) + 
+                        Math.sin(nx * 2.1 + 0.5) * Math.cos(nz * 1.9 + 0.3) * 0.5 +
+                        Math.sin(nx * 4.3 + 1.2) * Math.cos(nz * 3.7 + 0.7) * 0.25) / 1.75;
+            }
+            
+            // FLATTER terrain parameters
+            const baseHeight = Math.floor(size * 0.08);  // Lower base
+            const hillHeight = Math.floor(size * 0.06); // Much smaller hills
+            const scale = 0.015;  // Gentler slopes
+            
+            let processedRows = 0;
+            const totalRows = size;
+            
+            // Process in chunks for progress updates
+            function processChunk(startX, endX) {
+                for (let x = startX; x < endX; x++) {
+                    for (let z = 0; z < size; z++) {
+                        // Multi-octave noise for gentle terrain
+                        const n1 = noise2D(x, z, scale, 12345);
+                        const n2 = noise2D(x, z, scale * 2, 54321) * 0.5;
+                        const n3 = noise2D(x, z, scale * 4, 98765) * 0.25;
+                        
+                        const heightNoise = (n1 + n2 + n3) / 1.75;
+                        const height = baseHeight + Math.floor((heightNoise * 0.5 + 0.5) * hillHeight);
+                        
+                        // Generate terrain column
+                        for (let y = 0; y < height; y++) {
+                            let color;
+                            if (y === height - 1) {
+                                // Grass top
+                                color = [74 + Math.floor(Math.random() * 20), 
+                                        124 + Math.floor(Math.random() * 20), 
+                                        69 + Math.floor(Math.random() * 20)];
+                            } else if (y > height - 4) {
+                                // Dirt layer
+                                color = [139 + Math.floor(Math.random() * 15), 
+                                        90 + Math.floor(Math.random() * 15), 
+                                        60 + Math.floor(Math.random() * 10)];
+                            } else if (y > 2) {
+                                // Stone
+                                const shade = Math.floor(Math.random() * 20);
+                                color = [100 + shade, 100 + shade, 105 + shade];
+                            } else {
+                                // Bedrock
+                                color = [50, 50, 55];
+                            }
+                            world.setVoxel(x, y, z, ...color);
+                        }
+                    }
+                    processedRows++;
+                }
+            }
+            
+            // Generate terrain
+            onProgress(0, 'Generating terrain...');
+            const chunkSize = 32;
+            
+            for (let x = 0; x < size; x += chunkSize) {
+                processChunk(x, Math.min(x + chunkSize, size));
+                onProgress(processedRows / totalRows * 0.7, `Terrain: ${Math.floor(processedRows / totalRows * 100)}%`);
+            }
+            
+            // Add trees
+            onProgress(0.7, 'Planting trees...');
+            const numTrees = Math.floor(size * size * 0.001);  // Good tree density
+            
+            for (let i = 0; i < numTrees; i++) {
+                const tx = Math.floor(Math.random() * (size - 10)) + 5;
+                const tz = Math.floor(Math.random() * (size - 10)) + 5;
+                
+                // Find ground height
+                let groundY = 0;
+                for (let y = size - 1; y >= 0; y--) {
+                    const voxel = world.getVoxel(tx, y, tz);
+                    if (voxel && voxel.a > 0) {
+                        groundY = y;
+                        break;
+                    }
+                }
+                
+                if (groundY < 3) continue;
+                
+                const treeHeight = Math.floor(Math.random() * 4) + 5;
+                
+                // Trunk (oak-colored)
+                for (let y = groundY + 1; y < groundY + treeHeight; y++) {
+                    world.setVoxel(tx, y, tz, 
+                        93 + Math.floor(Math.random() * 10), 
+                        64 + Math.floor(Math.random() * 10), 
+                        45 + Math.floor(Math.random() * 10));
+                }
+                
+                // Leaves (minecraft-style blocky)
+                const leafY = groundY + treeHeight - 2;
+                const leafRadius = 2;
+                
+                for (let dy = 0; dy <= 3; dy++) {
+                    const r = dy < 2 ? leafRadius : leafRadius - 1;
+                    for (let dx = -r; dx <= r; dx++) {
+                        for (let dz = -r; dz <= r; dz++) {
+                            // Skip corners for rounder look
+                            if (Math.abs(dx) === r && Math.abs(dz) === r && dy < 2) continue;
+                            // Don't overwrite trunk
+                            if (dx === 0 && dz === 0 && dy < 2) continue;
+                            
+                            world.setVoxel(tx + dx, leafY + dy, tz + dz,
+                                36 + Math.floor(Math.random() * 20),
+                                115 + Math.floor(Math.random() * 30),
+                                40 + Math.floor(Math.random() * 20));
+                        }
+                    }
+                }
+                
+                if (i % 100 === 0) {
+                    onProgress(0.7 + (i / numTrees) * 0.25, `Trees: ${Math.floor(i / numTrees * 100)}%`);
+                }
+            }
+            
+            // Add some flowers/grass decoration
+            onProgress(0.95, 'Adding details...');
+            const decorCount = Math.floor(size * size * 0.002);
+            const flowerColors = [
+                [255, 50, 50],    // Red
+                [255, 255, 50],   // Yellow
+                [255, 150, 200],  // Pink
+                [150, 150, 255],  // Blue
+            ];
+            
+            for (let i = 0; i < decorCount; i++) {
+                const dx = Math.floor(Math.random() * size);
+                const dz = Math.floor(Math.random() * size);
+                
+                // Find ground
+                for (let y = size - 1; y >= 0; y--) {
+                    const voxel = world.getVoxel(dx, y, dz);
+                    if (voxel && voxel.a > 0) {
+                        const flower = flowerColors[Math.floor(Math.random() * flowerColors.length)];
+                        world.setVoxel(dx, y + 1, dz, ...flower);
+                        break;
+                    }
+                }
+            }
+            
+            onProgress(1.0, 'Done!');
+        }
+        
+        // ================================================================
+        // Benchmark Application
+        // ================================================================
+        
+        class BenchmarkApp {
+            constructor(canvasId) {
+                this.canvas = document.getElementById(canvasId);
+                this.engine = new VoxelEngine(this.canvas);
+                
+                // Input handling
+                this.keys = {};
+                this.isLocked = false;
+                this.mouseDelta = { x: 0, y: 0 };
+                
+                // Performance tracking
+                this.fps = 0;
+                this.frameCount = 0;
+                this.lastFpsTime = performance.now();
+                this.lastRenderTime = 0;
+                
+                // Benchmark data
+                this.renderTimes = [];
+                this.maxSamples = 500;
+                this.warmupFrames = 60;  // Skip first 60 frames
+                this.frameNumber = 0;
+                
+                // World size: 1024³ (coarse=128, brick=8)
+                this.coarseSize = 128;
+                
+                this._setupInput();
+            }
+            
+            _setupInput() {
+                window.addEventListener('keydown', (e) => {
+                    this.keys[e.code] = true;
+                    if (e.code === 'Escape' && this.isLocked) {
+                        document.exitPointerLock();
+                    }
+                });
+                
+                window.addEventListener('keyup', (e) => {
+                    this.keys[e.code] = false;
+                });
+                
+                this.canvas.addEventListener('click', () => {
+                    if (!this.isLocked) {
+                        this.canvas.requestPointerLock();
+                    }
+                });
+                
+                document.addEventListener('pointerlockchange', () => {
+                    this.isLocked = document.pointerLockElement === this.canvas;
+                    const overlay = document.getElementById('overlay');
+                    const crosshair = document.querySelector('.crosshair');
+                    const container = this.canvas.parentElement;
+                    
+                    if (overlay) overlay.classList.toggle('hidden', this.isLocked);
+                    if (crosshair) crosshair.classList.toggle('visible', this.isLocked);
+                    if (container) container.classList.toggle('locked', this.isLocked);
+                });
+                
+                document.addEventListener('mousemove', (e) => {
+                    if (this.isLocked) {
+                        this.mouseDelta.x += e.movementX;
+                        this.mouseDelta.y += e.movementY;
+                    }
+                });
+                
+                window.addEventListener('resize', () => this._handleResize());
+            }
+            
+            async init() {
+                const loading = document.getElementById('loading');
+                const loadingBar = document.getElementById('loading-bar');
+                const loadingText = document.getElementById('loading-text');
+                const overlay = document.getElementById('overlay');
+                
+                // Create world
+                loadingText.textContent = 'Creating world...';
+                loadingBar.style.width = '5%';
+                
+                await this._delay(100);
+                
+                this.engine.createWorld(this.coarseSize, 8);
+                
+                // Generate terrain with progress
+                generateMinecraftTerrain(this.engine.world, (progress, text) => {
+                    loadingBar.style.width = (5 + progress * 85) + '%';
+                    loadingText.textContent = text;
+                });
+                
+                // Upload to GPU
+                loadingText.textContent = 'Uploading to GPU...';
+                loadingBar.style.width = '95%';
+                await this._delay(100);
+                
+                this.engine.uploadWorld();
+                
+                loadingBar.style.width = '100%';
+                loadingText.textContent = 'Ready!';
+                await this._delay(500);
+                
+                // Hide loading, show overlay
+                loading.classList.add('hidden');
+                overlay.classList.remove('hidden');
+                
+                // Setup camera
+                const size = this.engine.world.worldSize;
+                this.engine.camera.setPosition(size / 2, size * 0.15, size / 2);
+                this.engine.camera.yaw = Math.PI / 4;
+                this.engine.camera.pitch = -0.2;
+                this.engine.camera.moveSpeed = size * 0.3;
+                this.engine.camera.fov = 70;
+                
+                // Enable shadows for benchmark
+                this.engine.settings.enableShadows = true;
+                
+                this._handleResize();
+            }
+            
+            _delay(ms) {
+                return new Promise(resolve => setTimeout(resolve, ms));
+            }
+            
+            _handleResize() {
+                const container = this.canvas.parentElement;
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+                this.engine.resize(width, height);
+            }
+            
+            _updateCamera(deltaTime) {
+                const camera = this.engine.camera;
+                const speed = camera.moveSpeed * deltaTime;
+                const fastSpeed = speed * 2;
+                
+                const currentSpeed = this.keys['ShiftLeft'] ? fastSpeed : speed;
+                
+                if (this.keys['KeyW']) camera.moveForward(currentSpeed);
+                if (this.keys['KeyS']) camera.moveForward(-currentSpeed);
+                if (this.keys['KeyA']) camera.moveRight(-currentSpeed);
+                if (this.keys['KeyD']) camera.moveRight(currentSpeed);
+                if (this.keys['KeyQ']) camera.moveUp(-currentSpeed);
+                if (this.keys['KeyE']) camera.moveUp(currentSpeed);
+                
+                camera.rotate(
+                    this.mouseDelta.x * camera.lookSpeed,
+                    this.mouseDelta.y * camera.lookSpeed
+                );
+                this.mouseDelta.x = 0;
+                this.mouseDelta.y = 0;
+            }
+            
+            _updateStats() {
+                this.frameCount++;
+                const now = performance.now();
+                
+                if (now - this.lastFpsTime >= 1000) {
+                    this.fps = this.frameCount;
+                    this.frameCount = 0;
+                    this.lastFpsTime = now;
+                }
+                
+                // Update UI
+                const camera = this.engine.camera;
+                const res = this.engine.getResolution();
+                const mem = this.engine.getMemoryUsage();
+                
+                document.getElementById('fps').textContent = this.fps;
+                document.getElementById('frame-time').textContent = (1000 / Math.max(1, this.fps)).toFixed(1) + ' ms';
+                document.getElementById('render-time').textContent = this.lastRenderTime.toFixed(2) + ' ms';
+                document.getElementById('resolution-display').textContent = `${res.width} x ${res.height}`;
+                document.getElementById('world-size-display').textContent = `${this.engine.getWorldSize()}³`;
+                document.getElementById('voxel-count').textContent = this.engine.getVoxelCount().toLocaleString();
+                document.getElementById('brick-count').textContent = this.engine.getBrickCount().toLocaleString();
+                document.getElementById('memory-usage').textContent = mem.totalMB.toFixed(2) + ' MB';
+                document.getElementById('cam-pos').textContent = 
+                    `(${camera.position[0].toFixed(0)}, ${camera.position[1].toFixed(0)}, ${camera.position[2].toFixed(0)})`;
+                
+                // Update benchmark stats
+                if (this.renderTimes.length > 0) {
+                    const avg = this.renderTimes.reduce((a, b) => a + b, 0) / this.renderTimes.length;
+                    const min = Math.min(...this.renderTimes);
+                    const max = Math.max(...this.renderTimes);
+                    
+                    // Standard deviation
+                    const variance = this.renderTimes.reduce((sum, val) => sum + Math.pow(val - avg, 2), 0) / this.renderTimes.length;
+                    const stdDev = Math.sqrt(variance);
+                    
+                    document.getElementById('avg-render-time').textContent = avg.toFixed(2);
+                    document.getElementById('min-render-time').textContent = min.toFixed(2) + ' ms';
+                    document.getElementById('max-render-time').textContent = max.toFixed(2) + ' ms';
+                    document.getElementById('std-dev').textContent = stdDev.toFixed(2) + ' ms';
+                    document.getElementById('sample-count').textContent = this.renderTimes.length;
+                }
+            }
+            
+            run() {
+                let lastTime = performance.now();
+                
+                const gameLoop = () => {
+                    const now = performance.now();
+                    const deltaTime = (now - lastTime) / 1000;
+                    lastTime = now;
+                    
+                    this._updateCamera(deltaTime);
+                    
+                    // Measure actual GPU render time
+                    const renderStart = performance.now();
+                    this.engine.render();
+                    
+                    // Force GPU sync for accurate timing (read a pixel)
+                    const gl = this.engine.gl;
+                    const pixel = new Uint8Array(4);
+                    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+                    
+                    const renderEnd = performance.now();
+                    this.lastRenderTime = renderEnd - renderStart;
+                    
+                    // Collect benchmark data (skip warmup frames)
+                    this.frameNumber++;
+                    if (this.frameNumber > this.warmupFrames && this.renderTimes.length < this.maxSamples) {
+                        this.renderTimes.push(this.lastRenderTime);
+                    }
+                    
+                    this._updateStats();
+                    
+                    requestAnimationFrame(gameLoop);
+                };
+                
+                gameLoop();
+            }
+        }
+        
+        // ================================================================
+        // Start
+        // ================================================================
+        
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const app = new BenchmarkApp('canvas');
+                await app.init();
+                app.run();
+            } catch (error) {
+                console.error('Failed to initialize:', error);
+                document.getElementById('loading-text').textContent = 'Error: ' + error.message;
+                document.getElementById('loading-text').style.color = '#ff6b6b';
+            }
+        });
+    </script>
+</body>
+</html>
