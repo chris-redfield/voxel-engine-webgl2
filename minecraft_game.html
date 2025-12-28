@@ -272,7 +272,32 @@
             const n1 = this.noise2D(x, z, this.scale, this.seed);
             const n2 = this.noise2D(x, z, this.scale * 2, this.seed + 1000) * 0.5;
             const n3 = this.noise2D(x, z, this.scale * 4, this.seed + 2000) * 0.25;
-            return this.baseHeight + Math.floor(((n1 + n2 + n3) / 1.75 * 0.5 + 0.5) * this.hillHeight);
+            let baseH = this.baseHeight + Math.floor(((n1 + n2 + n3) / 1.75 * 0.5 + 0.5) * this.hillHeight);
+            
+            // Add a big climbable mountain near spawn (centered at x=20, z=20)
+            const mountainCenterX = 20;
+            const mountainCenterZ = 20;
+            const mountainRadius = 45;  // How wide the mountain base is
+            const mountainHeight = 50;  // Peak height above base terrain
+            const slopeGentleness = 1.3; // Higher = gentler slope (climbable without jumping)
+            
+            const dx = x - mountainCenterX;
+            const dz = z - mountainCenterZ;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            
+            if (dist < mountainRadius) {
+                // Smooth cosine falloff for a natural mountain shape
+                const normalizedDist = dist / mountainRadius;
+                // Use a gentler curve: pow makes the top flatter, cos makes it smooth
+                const heightFactor = Math.pow(Math.cos(normalizedDist * Math.PI / 2), slopeGentleness);
+                
+                // Add some noise to make it look natural (rocky texture)
+                const rockNoise = this.noise2D(x, z, 0.15, this.seed + 5000) * 3;
+                
+                baseH += Math.floor(heightFactor * mountainHeight + rockNoise);
+            }
+            
+            return baseH;
         }
         
         pseudoRandom(seed) {
@@ -310,7 +335,16 @@
                     const noiseX = chunkX * chunkSize + lx;
                     const noiseZ = chunkZ * chunkSize + lz;
                     
-                    // Find minimum neighbor
+                    // Check if this is part of the mountain
+                    const mountainCenterX = 20;
+                    const mountainCenterZ = 20;
+                    const mountainRadius = 45;
+                    const dx = noiseX - mountainCenterX;
+                    const dz = noiseZ - mountainCenterZ;
+                    const distFromMountain = Math.sqrt(dx * dx + dz * dz);
+                    const isOnMountain = distFromMountain < mountainRadius;
+                    
+                    // Find minimum neighbor (check more neighbors for better coverage)
                     const getH = (dx, dz) => {
                         const nx = lx + dx, nz = lz + dz;
                         if (nx >= 0 && nx < chunkSize && nz >= 0 && nz < chunkSize)
@@ -318,12 +352,46 @@
                         return this.getHeight(noiseX + dx, noiseZ + dz);
                     };
                     
-                    const minH = Math.min(getH(-1,0), getH(1,0), getH(0,-1), getH(0,1));
-                    const startY = Math.max(0, minH - 1);
+                    // Check all 8 neighbors plus some extended range for steep slopes
+                    const neighborHeights = [
+                        getH(-1, 0), getH(1, 0), getH(0, -1), getH(0, 1),
+                        getH(-1, -1), getH(-1, 1), getH(1, -1), getH(1, 1),
+                        getH(-2, 0), getH(2, 0), getH(0, -2), getH(0, 2)
+                    ];
+                    const minH = Math.min(...neighborHeights);
+                    
+                    // Generate extra depth to prevent holes (at least 3 blocks deep, more on slopes)
+                    const heightDiff = h - minH;
+                    const extraDepth = Math.max(3, heightDiff + 2);
+                    const startY = Math.max(0, h - extraDepth);
                     
                     for (let y = startY; y < h; y++) {
                         let r, g, b;
-                        if (y === h - 1) {
+                        
+                        if (isOnMountain && y > 60) {
+                            // Snow at high altitudes
+                            if (y === h - 1) {
+                                const snow = 240 + (this.pseudoRandom(noiseX*1000+noiseZ+y) * 15)|0;
+                                r = snow; g = snow; b = snow + 5;
+                            } else {
+                                const snow = 220 + (this.pseudoRandom(noiseX*1000+noiseZ+y) * 20)|0;
+                                r = snow; g = snow; b = snow + 10;
+                            }
+                        } else if (isOnMountain && y > 45) {
+                            // Rocky mountain surface - gray/brown stone
+                            const rockVar = this.pseudoRandom(noiseX*1000+noiseZ+y);
+                            if (rockVar > 0.6) {
+                                // Darker rock patches
+                                r = 85 + (this.pseudoRandom(noiseX+noiseZ+y) * 20)|0;
+                                g = 80 + (this.pseudoRandom(noiseX+noiseZ+y+1) * 15)|0;
+                                b = 75 + (this.pseudoRandom(noiseX+noiseZ+y+2) * 15)|0;
+                            } else {
+                                // Lighter stone
+                                r = 120 + (this.pseudoRandom(noiseX+noiseZ+y) * 25)|0;
+                                g = 115 + (this.pseudoRandom(noiseX+noiseZ+y+1) * 20)|0;
+                                b = 105 + (this.pseudoRandom(noiseX+noiseZ+y+2) * 20)|0;
+                            }
+                        } else if (y === h - 1) {
                             r = 74 + (this.pseudoRandom(noiseX*1000+noiseZ+y) * 20)|0;
                             g = 124 + (this.pseudoRandom(noiseX*1000+noiseZ+y+1) * 20)|0;
                             b = 69 + (this.pseudoRandom(noiseX*1000+noiseZ+y+2) * 20)|0;
@@ -340,7 +408,7 @@
                 }
             }
             
-            // Add trees
+            // Add trees (but not on high mountain slopes)
             const treeSeed = this.seed + chunkX * 1000 + chunkZ;
             const numTrees = 2 + Math.floor(this.pseudoRandom(treeSeed) * 3);
             
@@ -349,7 +417,7 @@
                 const lz = Math.floor(this.pseudoRandom(treeSeed + i * 100 + 50) * (chunkSize - 8)) + 4;
                 const groundY = heights[lx + lz * chunkSize];
                 
-                if (groundY < 15) continue;
+                if (groundY < 15 || groundY > 50) continue; // Skip very low areas and mountain peaks
                 
                 const wx = startX + lx;
                 const wz = startZ + lz;
@@ -524,11 +592,13 @@
             progress(0.98, 'Finding spawn...');
             await this._delay(50);
             
-            // Spawn at center
-            const spawnY = this.terrain.getHeight(0, 0) + 2;
-            this.player.x = this.worldOffset + 0.5;
+            // Spawn at the top of the mountain (mountain center is at noise coords 20, 20)
+            const mountainCenterX = 20;
+            const mountainCenterZ = 20;
+            const spawnY = this.terrain.getHeight(mountainCenterX, mountainCenterZ) + 2;
+            this.player.x = this.worldOffset + mountainCenterX + 0.5;
             this.player.y = spawnY;
-            this.player.z = this.worldOffset + 0.5;
+            this.player.z = this.worldOffset + mountainCenterZ + 0.5;
             this.player.setSpawn(this.player.x, this.player.y, this.player.z);
             
             progress(1, 'Ready!');
