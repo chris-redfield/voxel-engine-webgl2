@@ -451,6 +451,10 @@ class BrickMapWorld {
         this.bricks = new Map();  // Map<brickIndex, Uint8Array>
         this.nextBrickIndex = 1;
         
+        // Dirty tracking for incremental uploads
+        this.dirtyBricks = new Set();  // Brick indices that need uploading
+        this.coarseGridDirty = false;  // Whether coarse grid needs uploading
+        
         // Atlas configuration
         this.atlasSize = 64;  // 64³ bricks = up to 262,144 bricks
         this.brickAtlasData = null;
@@ -499,14 +503,18 @@ class BrickMapWorld {
             // Create new brick
             brickIndex = this.nextBrickIndex++;
             this.coarseGrid[coarseIdx] = brickIndex;
+            this.coarseGridDirty = true;  // Mark coarse grid as needing upload
             
             // Allocate brick data (8³ × 4 bytes RGBA)
             const brickData = new Uint8Array(this.brickSize * this.brickSize * this.brickSize * 4);
             this.bricks.set(brickIndex, brickData);
             this.brickCount++;
+            
+            // Mark as dirty for incremental upload
+            this.dirtyBricks.add(brickIndex);
         }
         
-        return this.bricks.get(brickIndex);
+        return { brick: this.bricks.get(brickIndex), index: brickIndex };
     }
     
     setVoxel(x, y, z, r, g, b, a = 255) {
@@ -519,14 +527,18 @@ class BrickMapWorld {
         const [cx, cy, cz] = this._worldToCoarse(x, y, z);
         const [lx, ly, lz] = this._worldToLocal(x, y, z);
         
-        const brick = this._getOrCreateBrick(cx, cy, cz);
-        if (!brick) return false;
+        const result = this._getOrCreateBrick(cx, cy, cz);
+        if (!result) return false;
         
+        const { brick, index } = result;
         const idx = this._getBrickLocalIndex(lx, ly, lz);
         brick[idx] = r;
         brick[idx + 1] = g;
         brick[idx + 2] = b;
         brick[idx + 3] = a;
+        
+        // Mark brick as dirty for incremental upload
+        this.dirtyBricks.add(index);
         
         return true;
     }
@@ -565,6 +577,35 @@ class BrickMapWorld {
         this.nextBrickIndex = 1;
         this.voxelCount = 0;
         this.brickCount = 0;
+        this.dirtyBricks.clear();
+        this.coarseGridDirty = true;
+    }
+    
+    // Get atlas position for a brick index
+    getBrickAtlasPos(brickIndex) {
+        const idx = brickIndex - 1;  // Convert to 0-based
+        return {
+            x: idx % this.atlasSize,
+            y: Math.floor(idx / this.atlasSize) % this.atlasSize,
+            z: Math.floor(idx / (this.atlasSize * this.atlasSize))
+        };
+    }
+    
+    // Get dirty bricks and clear the dirty set
+    getDirtyBricksAndClear() {
+        const dirty = Array.from(this.dirtyBricks);
+        this.dirtyBricks.clear();
+        const coarseDirty = this.coarseGridDirty;
+        this.coarseGridDirty = false;
+        return { bricks: dirty, coarseGridDirty: coarseDirty };
+    }
+    
+    // Mark all bricks as dirty (for full upload)
+    markAllDirty() {
+        for (const brickIndex of this.bricks.keys()) {
+            this.dirtyBricks.add(brickIndex);
+        }
+        this.coarseGridDirty = true;
     }
     
     countVoxels() {
@@ -799,7 +840,57 @@ class VoxelEngine {
         gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, atlasVoxelSize, atlasVoxelSize, atlasVoxelSize,
                          gl.RGBA, gl.UNSIGNED_BYTE, this.world.brickAtlasData);
         
+        // Clear dirty tracking since we uploaded everything
+        this.world.dirtyBricks.clear();
+        this.world.coarseGridDirty = false;
+        
         this.world.countVoxels();
+    }
+    
+    // Incremental upload - only uploads changed bricks (FAST!)
+    uploadDirtyBricks() {
+        if (!this.world) return 0;
+        
+        const gl = this.gl;
+        const { bricks: dirtyBricks, coarseGridDirty } = this.world.getDirtyBricksAndClear();
+        
+        if (dirtyBricks.length === 0 && !coarseGridDirty) return 0;
+        
+        // Upload coarse grid if needed (always fast - just indices)
+        if (coarseGridDirty) {
+            gl.bindTexture(gl.TEXTURE_3D, this.coarseGridTexture);
+            const coarseSize = this.world.coarseSize;
+            gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, coarseSize, coarseSize, coarseSize,
+                             gl.RED_INTEGER, gl.UNSIGNED_INT, this.world.coarseGrid);
+        }
+        
+        // Upload only dirty bricks - each is just 8³×4 = 2KB!
+        if (dirtyBricks.length > 0) {
+            gl.bindTexture(gl.TEXTURE_3D, this.brickAtlasTexture);
+            const brickSize = this.world.brickSize;
+            
+            for (const brickIndex of dirtyBricks) {
+                const brickData = this.world.bricks.get(brickIndex);
+                if (!brickData) continue;
+                
+                const pos = this.world.getBrickAtlasPos(brickIndex);
+                const atlasX = pos.x * brickSize;
+                const atlasY = pos.y * brickSize;
+                const atlasZ = pos.z * brickSize;
+                
+                // Upload just this 8×8×8 brick
+                gl.texSubImage3D(
+                    gl.TEXTURE_3D, 0,
+                    atlasX, atlasY, atlasZ,
+                    brickSize, brickSize, brickSize,
+                    gl.RGBA, gl.UNSIGNED_BYTE,
+                    brickData
+                );
+            }
+        }
+        
+        this.world.countVoxels();
+        return dirtyBricks.length;
     }
     
     resize(width, height) {
