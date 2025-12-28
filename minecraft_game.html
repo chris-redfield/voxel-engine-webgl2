@@ -46,6 +46,7 @@
         .stat-label { color: #888; }
         .stat-value { color: #4ecca3; font-family: 'Consolas', monospace; }
         .stat-value.highlight { color: #ffd700; font-weight: bold; }
+        .stat-value.flying { color: #00bfff; font-weight: bold; text-shadow: 0 0 8px #00bfff; }
         .info {
             background: #0f3460;
             padding: 10px;
@@ -202,6 +203,10 @@
                 <span class="stat-label">On Ground</span>
                 <span class="stat-value" id="on-ground">No</span>
             </div>
+            <div class="stat">
+                <span class="stat-label">Flying</span>
+                <span class="stat-value" id="flying-status">No</span>
+            </div>
             
             <h2>🌍 World</h2>
             <div class="stat">
@@ -238,8 +243,9 @@
             <div class="info">
                 <strong>Controls:</strong><br>
                 <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> Move<br>
-                <span class="key">SPACE</span> Jump<br>
-                <span class="key">SHIFT</span> Sprint<br>
+                <span class="key">SPACE</span> Jump / Fly Up<br>
+                <span class="key">SHIFT</span> Sprint / Fly Down<br>
+                <span class="key">F</span> Toggle Flight ✈️<br>
                 <span class="key">Mouse</span> Look around<br>
                 <span class="key">ESC</span> Release cursor
             </div>
@@ -476,22 +482,31 @@
             this.width = 0.6; this.height = 1.8; this.eyeHeight = 1.6;
             this.onGround = false;
             this.walkSpeed = 6; this.sprintSpeed = 10;
+            this.flySpeed = 20;  // 2x sprint speed
             this.jumpForce = 8; this.gravity = 25;
             this.spawnX = 0; this.spawnY = 50; this.spawnZ = 0;
+            this.flying = false;
         }
         
         setSpawn(x, y, z) { this.spawnX = x; this.spawnY = y; this.spawnZ = z; }
-        respawn() { this.x = this.spawnX; this.y = this.spawnY; this.z = this.spawnZ; this.vx = this.vy = this.vz = 0; }
+        respawn() { this.x = this.spawnX; this.y = this.spawnY; this.z = this.spawnZ; this.vx = this.vy = this.vz = 0; this.flying = false; }
         getEyePos() { return [this.x, this.y + this.eyeHeight, this.z]; }
         getForward() { return [Math.sin(this.yaw), Math.cos(this.yaw)]; }
         getRight() { return [Math.cos(this.yaw), -Math.sin(this.yaw)]; }
+        
+        toggleFlight() {
+            this.flying = !this.flying;
+            if (this.flying) {
+                this.vy = 0;  // Stop any vertical momentum when starting flight
+            }
+        }
         
         rotate(dy, dp) {
             this.yaw += dy;
             this.pitch = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, this.pitch - dp));
         }
         
-        jump() { if (this.onGround) { this.vy = this.jumpForce; this.onGround = false; } }
+        jump() { if (this.onGround && !this.flying) { this.vy = this.jumpForce; this.onGround = false; } }
     }
     
     // ============================================================
@@ -524,8 +539,10 @@
         
         _setupInput() {
             window.addEventListener('keydown', e => {
+                if (this.keys[e.code]) return;  // Prevent repeat triggers
                 this.keys[e.code] = true;
                 if (e.code === 'Space') { e.preventDefault(); this.player.jump(); }
+                if (e.code === 'KeyF') { this.player.toggleFlight(); }
                 if (e.code === 'Escape' && this.isLocked) document.exitPointerLock();
             });
             window.addEventListener('keyup', e => this.keys[e.code] = false);
@@ -654,8 +671,8 @@
         }
         
         _updatePlayer(dt) {
-            // Respawn check
-            if (this.player.y < -20) {
+            // Respawn check (only if not flying)
+            if (this.player.y < -20 && !this.player.flying) {
                 document.getElementById('respawn-message').classList.add('visible');
                 setTimeout(() => document.getElementById('respawn-message').classList.remove('visible'), 1500);
                 this.player.respawn();
@@ -669,7 +686,7 @@
             // Movement
             const [fx, fz] = this.player.getForward();
             const [rx, rz] = this.player.getRight();
-            let mx = 0, mz = 0;
+            let mx = 0, mz = 0, my = 0;
             
             if (this.keys['KeyW']) { mx += fx; mz += fz; }
             if (this.keys['KeyS']) { mx -= fx; mz -= fz; }
@@ -679,11 +696,24 @@
             const len = Math.sqrt(mx*mx + mz*mz);
             if (len > 0) { mx /= len; mz /= len; }
             
-            const speed = this.keys['ShiftLeft'] ? this.player.sprintSpeed : this.player.walkSpeed;
-            this.player.vx = mx * speed;
-            this.player.vz = mz * speed;
-            this.player.vy -= this.player.gravity * dt;
-            this.player.vy = Math.max(this.player.vy, -50);
+            if (this.player.flying) {
+                // Flight mode: no gravity, Space goes up, Ctrl/Shift goes down, fast speed
+                const speed = this.player.flySpeed;
+                this.player.vx = mx * speed;
+                this.player.vz = mz * speed;
+                
+                // Vertical flight controls
+                if (this.keys['Space']) { my = 1; }
+                if (this.keys['ControlLeft'] || this.keys['ShiftLeft']) { my = -1; }
+                this.player.vy = my * speed;
+            } else {
+                // Normal mode with gravity
+                const speed = this.keys['ShiftLeft'] ? this.player.sprintSpeed : this.player.walkSpeed;
+                this.player.vx = mx * speed;
+                this.player.vz = mz * speed;
+                this.player.vy -= this.player.gravity * dt;
+                this.player.vy = Math.max(this.player.vy, -50);
+            }
             
             // Move with collision
             const newX = this.player.x + this.player.vx * dt;
@@ -761,6 +791,8 @@
                 `(${this.player.x.toFixed(0)}, ${this.player.y.toFixed(0)}, ${this.player.z.toFixed(0)})`;
             document.getElementById('player-chunk').textContent = `(${pcx}, ${pcz})`;
             document.getElementById('on-ground').textContent = this.player.onGround ? 'Yes' : 'No';
+            document.getElementById('flying-status').textContent = this.player.flying ? '✈️ Yes' : 'No';
+            document.getElementById('flying-status').classList.toggle('flying', this.player.flying);
             document.getElementById('chunk-count').textContent = this.loadedChunks.size;
             document.getElementById('voxel-count').textContent = this.engine.getVoxelCount().toLocaleString();
             document.getElementById('brick-count').textContent = this.engine.getBrickCount().toLocaleString();
