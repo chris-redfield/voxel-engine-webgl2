@@ -508,7 +508,9 @@ class BrickMapWorld {
         this.coarseGridDirty = false;  // Whether coarse grid needs uploading
         
         // Atlas configuration
-        this.atlasSize = 64;  // 64³ bricks = up to 262,144 bricks
+        // For large worlds (4096³), we need more brick capacity
+        // 96³ = 884,736 bricks, texture = 768³ (~1.8GB VRAM)
+        this.atlasSize = 96;
         this.brickAtlasData = null;
         
         // Stats
@@ -672,10 +674,18 @@ class BrickMapWorld {
     
     // Build atlas texture data for GPU
     buildAtlas() {
+        const maxBricks = this.atlasSize * this.atlasSize * this.atlasSize;
+        if (this.brickCount > maxBricks) {
+            console.warn(`WARNING: Brick count (${this.brickCount}) exceeds atlas capacity (${maxBricks}). Some voxels will be invisible!`);
+        }
+
         const atlasVoxelSize = this.atlasSize * this.brickSize;
         this.brickAtlasData = new Uint8Array(atlasVoxelSize * atlasVoxelSize * atlasVoxelSize * 4);
-        
+
         for (const [brickIndex, brickData] of this.bricks) {
+            // Skip bricks that exceed atlas capacity
+            if (brickIndex > maxBricks) continue;
+
             const idx = brickIndex - 1;  // Convert to 0-based
             const ax = idx % this.atlasSize;
             const ay = Math.floor(idx / this.atlasSize) % this.atlasSize;
