@@ -554,7 +554,11 @@
                 document.getElementById('overlay').classList.toggle('hidden', this.isLocked);
                 document.querySelector('.crosshair').classList.toggle('visible', this.isLocked);
                 this.canvas.parentElement.classList.toggle('locked', this.isLocked);
+                // Clear all keys when pointer lock is lost to prevent stuck keys
+                if (!this.isLocked) this.keys = {};
             });
+            // Also clear keys when window loses focus (alt-tab, etc)
+            window.addEventListener('blur', () => this.keys = {});
             document.addEventListener('mousemove', e => {
                 if (this.isLocked) {
                     this.mouseDelta.x += e.movementX;
