@@ -53,6 +53,18 @@ uniform vec3 u_lightDir;
 uniform vec3 u_skyColorTop;
 uniform vec3 u_skyColorBottom;
 uniform float u_fogDensity;
+uniform int u_lanternEnabled;
+uniform vec3 u_lanternPos;
+uniform vec3 u_lanternDir;
+uniform float u_lanternIntensity;
+uniform float u_lanternConeAngle;
+
+// Orb lights (up to 16)
+uniform int u_numOrbLights;
+uniform vec3 u_orbPositions[16];
+uniform vec3 u_orbDirections[16];
+uniform vec3 u_orbColors[16];
+uniform float u_orbIntensity;
 
 // Constants
 const int BRICK_SIZE = 8;
@@ -396,22 +408,86 @@ void main() {
             color = hit.normal * 0.5 + 0.5;
         } else {
             vec3 baseColor = hit.color.rgb;
-            
-            // Diffuse lighting
+
+            // Diffuse lighting from sun/moon
             float diffuse = max(0.3, dot(hit.normal, u_lightDir));
-            
+
             // Shadow
             float shadow = 1.0;
             if (u_enableShadows == 1) {
                 vec3 shadowOrigin = hit.pos + hit.normal * 0.5 + vec3(0.5);
                 shadow = traceShadow(shadowOrigin, u_lightDir);
             }
-            
+
+            color = baseColor * diffuse * shadow;
+
+            // Lantern/flashlight spotlight
+            if (u_lanternEnabled == 1) {
+                vec3 hitWorldPos = hit.pos + vec3(0.5);
+                vec3 toHit = hitWorldPos - u_lanternPos;
+                float distToHit = length(toHit);
+                vec3 toHitDir = toHit / distToHit;
+
+                // Spotlight cone angle check
+                float cosAngle = dot(toHitDir, u_lanternDir);
+                float cosConeAngle = cos(u_lanternConeAngle);
+                float cosOuterCone = cos(u_lanternConeAngle * 1.4);
+
+                if (cosAngle > cosOuterCone) {
+                    // Inside the spotlight cone
+                    float spotEffect = smoothstep(cosOuterCone, cosConeAngle, cosAngle);
+
+                    // Distance attenuation
+                    float attenuation = 1.0 / (1.0 + 0.02 * distToHit + 0.001 * distToHit * distToHit);
+
+                    // Diffuse from lantern direction
+                    float lanternDiffuse = max(0.0, dot(hit.normal, -toHitDir));
+
+                    // Warm lantern color
+                    vec3 lanternColor = vec3(1.0, 0.85, 0.6) * u_lanternIntensity;
+
+                    // Add lantern contribution
+                    color += baseColor * lanternColor * lanternDiffuse * spotEffect * attenuation;
+                }
+            }
+
+            // Orb lights - directional spotlights
+            vec3 hitWorldPos = hit.pos + vec3(0.5);
+            for (int i = 0; i < 16; i++) {
+                if (i >= u_numOrbLights) break;
+
+                vec3 toHit = hitWorldPos - u_orbPositions[i];
+                float distToHit = length(toHit);
+                vec3 toHitDir = toHit / distToHit;
+
+                // Spotlight cone (60 degree cone)
+                float cosAngle = dot(toHitDir, u_orbDirections[i]);
+                float cosConeAngle = cos(0.52);  // ~30 degrees half-angle
+                float cosOuterCone = cos(0.78);  // ~45 degrees outer
+
+                // Spotlight factor with soft falloff
+                float spotEffect = smoothstep(cosOuterCone, cosConeAngle, cosAngle);
+
+                // Also add some ambient glow (omnidirectional)
+                float ambientGlow = 0.3;
+
+                // Distance attenuation
+                float attenuation = 1.0 / (1.0 + 0.03 * distToHit + 0.002 * distToHit * distToHit);
+
+                // Diffuse lighting
+                float orbDiffuse = max(0.0, dot(hit.normal, -toHitDir));
+
+                // Combined spot + ambient contribution
+                float lightFactor = (spotEffect * 0.7 + ambientGlow) * orbDiffuse * attenuation;
+
+                // Add orb light contribution
+                color += baseColor * u_orbColors[i] * u_orbIntensity * lightFactor;
+            }
+
             // Distance fog
             float fog = clamp(hit.distance * u_fogDensity / worldSize.x, 0.0, 1.0);
             vec3 fogColor = mix(u_skyColorTop, u_skyColorBottom, 0.5);
-            
-            color = baseColor * diffuse * shadow;
+
             color = mix(color, fogColor, fog * 0.8);
         }
     } else {
@@ -747,7 +823,12 @@ class VoxelEngine {
             fogDensity: 1.5,
             skyColorTop: [0.1, 0.1, 0.44],
             skyColorBottom: [0.53, 0.81, 0.92],
-            lightDirection: this._normalize([0.5, 0.8, 0.3])
+            lightDirection: this._normalize([0.5, 0.8, 0.3]),
+            lanternEnabled: false,
+            lanternIntensity: 3.75,  // 50% stronger
+            lanternConeAngle: 0.45,  // radians (~25 degrees)
+            orbLights: [],  // Array of {pos, dir, color}
+            orbIntensity: 3.0  // 50% brighter
         };
         
         // Components
@@ -828,6 +909,16 @@ class VoxelEngine {
             u_skyColorTop: gl.getUniformLocation(this.program, 'u_skyColorTop'),
             u_skyColorBottom: gl.getUniformLocation(this.program, 'u_skyColorBottom'),
             u_fogDensity: gl.getUniformLocation(this.program, 'u_fogDensity'),
+            u_lanternEnabled: gl.getUniformLocation(this.program, 'u_lanternEnabled'),
+            u_lanternPos: gl.getUniformLocation(this.program, 'u_lanternPos'),
+            u_lanternDir: gl.getUniformLocation(this.program, 'u_lanternDir'),
+            u_lanternIntensity: gl.getUniformLocation(this.program, 'u_lanternIntensity'),
+            u_lanternConeAngle: gl.getUniformLocation(this.program, 'u_lanternConeAngle'),
+            u_numOrbLights: gl.getUniformLocation(this.program, 'u_numOrbLights'),
+            u_orbPositions: gl.getUniformLocation(this.program, 'u_orbPositions'),
+            u_orbDirections: gl.getUniformLocation(this.program, 'u_orbDirections'),
+            u_orbColors: gl.getUniformLocation(this.program, 'u_orbColors'),
+            u_orbIntensity: gl.getUniformLocation(this.program, 'u_orbIntensity'),
         };
         
         // Create fullscreen quad
@@ -1004,7 +1095,43 @@ class VoxelEngine {
         gl.uniform3fv(this.locations.u_skyColorTop, this.settings.skyColorTop);
         gl.uniform3fv(this.locations.u_skyColorBottom, this.settings.skyColorBottom);
         gl.uniform1f(this.locations.u_fogDensity, this.settings.fogDensity);
-        
+
+        // Lantern uniforms
+        gl.uniform1i(this.locations.u_lanternEnabled, this.settings.lanternEnabled ? 1 : 0);
+        gl.uniform3fv(this.locations.u_lanternPos, camera.position);
+        gl.uniform3fv(this.locations.u_lanternDir, camera.getDirection());
+        gl.uniform1f(this.locations.u_lanternIntensity, this.settings.lanternIntensity);
+        gl.uniform1f(this.locations.u_lanternConeAngle, this.settings.lanternConeAngle);
+
+        // Orb light uniforms
+        const orbLights = this.settings.orbLights;
+        const numOrbs = Math.min(orbLights.length, 16);
+        gl.uniform1i(this.locations.u_numOrbLights, numOrbs);
+        gl.uniform1f(this.locations.u_orbIntensity, this.settings.orbIntensity);
+
+        if (numOrbs > 0) {
+            const positions = new Float32Array(16 * 3);
+            const directions = new Float32Array(16 * 3);
+            const colors = new Float32Array(16 * 3);
+
+            for (let i = 0; i < numOrbs; i++) {
+                const orb = orbLights[i];
+                positions[i * 3] = orb.pos[0];
+                positions[i * 3 + 1] = orb.pos[1];
+                positions[i * 3 + 2] = orb.pos[2];
+                directions[i * 3] = orb.dir[0];
+                directions[i * 3 + 1] = orb.dir[1];
+                directions[i * 3 + 2] = orb.dir[2];
+                colors[i * 3] = orb.color[0];
+                colors[i * 3 + 1] = orb.color[1];
+                colors[i * 3 + 2] = orb.color[2];
+            }
+
+            gl.uniform3fv(this.locations.u_orbPositions, positions);
+            gl.uniform3fv(this.locations.u_orbDirections, directions);
+            gl.uniform3fv(this.locations.u_orbColors, colors);
+        }
+
         // Draw
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
